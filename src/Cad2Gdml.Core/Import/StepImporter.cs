@@ -70,7 +70,7 @@ namespace Cad2Gdml.Import
             if (python == null || script == null)
             {
                 errorCode = "E_STEP_NO_RUNTIME";
-                errorMessage = "Модуль STEP не найден: положите каталог tools (step_export.py и ocpenv) рядом с программой.";
+                errorMessage = "Модуль STEP не найден. Нужен Python 3.12 (python.exe в PATH или переменная CAD2GDML_PYTHON).";
                 return null;
             }
 
@@ -274,9 +274,28 @@ namespace Cad2Gdml.Import
             }
         }
 
-        // Поиск python.exe в PATH, исключая WindowsApps
+        // Поиск python.exe 3.12 в стандартных путях и в PATH
         private static string FindPythonOnPath()
         {
+            // Стандартные расположения Python 3.12
+            string localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            if (localAppData != null)
+            {
+                string c = Path.Combine(localAppData, "Programs", "Python", "Python312", "python.exe");
+                if (File.Exists(c)) return c;
+            }
+
+            string programFiles = Environment.GetEnvironmentVariable("ProgramFiles");
+            if (programFiles != null)
+            {
+                string c = Path.Combine(programFiles, "Python312", "python.exe");
+                if (File.Exists(c)) return c;
+            }
+
+            string c3 = @"C:\Python312\python.exe";
+            if (File.Exists(c3)) return c3;
+
+            // Сканирование PATH: принимаем только каталоги с меткой 3.12
             string pathVar = Environment.GetEnvironmentVariable("PATH");
             if (pathVar == null) return null;
 
@@ -297,9 +316,14 @@ namespace Cad2Gdml.Import
                 }
 
                 if (!File.Exists(candidate)) continue;
-                if (candidate.IndexOf("WindowsApps", StringComparison.OrdinalIgnoreCase) >= 0) continue;
 
-                return candidate;
+                // Проверяем, что путь содержит метку Python 3.12
+                if (dir.IndexOf("Python312", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    dir.IndexOf("Python3.12", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    dir.IndexOf("python-3.12", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return candidate;
+                }
             }
             return null;
         }
