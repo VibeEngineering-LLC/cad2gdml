@@ -197,7 +197,7 @@ namespace Cad2Gdml.Recognize
             }
 
             // Объём сетки
-            double meshVol = Math.Abs(ComputeMeshVolume(part.Mesh));
+            double meshVol = Math.Abs(MeshProperties.SignedVolume(part.Mesh));
 
             // Объём профиля по Паппу
             double profVol = ComputeProfileVolume(lZ, lRIn, lROut, nLevels);
@@ -264,19 +264,6 @@ namespace Cad2Gdml.Recognize
             return shape;
         }
 
-        // Объём сетки: (1/6) Σ v0·(v1×v2)
-        private static double ComputeMeshVolume(Mesh mesh)
-        {
-            double vol = 0.0;
-            int triCount = mesh.TriangleCount;
-            for (int t = 0; t < triCount; t++)
-            {
-                Vec3d a, b, c;
-                mesh.GetTriangle(t, out a, out b, out c);
-                vol += a.Dot(b.Cross(c));
-            }
-            return vol / 6.0;
-        }
 
         // Объём тела вращения: V = π ∮ r² dz по контуру профиля
         // Контур: наружная кромка (rOut) по возрастанию z,

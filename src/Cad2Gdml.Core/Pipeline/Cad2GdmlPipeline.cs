@@ -263,7 +263,7 @@ namespace Cad2Gdml.Pipeline
                     return false;
                 }
 
-                double vol = SignedVolume(p.Mesh);
+                double vol = MeshProperties.SignedVolume(p.Mesh);
                 if (Math.Abs(vol) < 1e-6)
                 {
                     scene.Add("E_MESH_EMPTY", DiagSeverity.Error, p.Name,
@@ -285,19 +285,6 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Знаковый объём: (1/6) Σ a·(b×c)
-        private static double SignedVolume(Mesh mesh)
-        {
-            double vol = 0.0;
-            int n = mesh.TriangleCount;
-            for (int i = 0; i < n; i++)
-            {
-                Vec3d a, b, c;
-                mesh.GetTriangle(i, out a, out b, out c);
-                vol += a.Dot(b.Cross(c));
-            }
-            return vol / 6.0;
-        }
 
         // Назначение ролей и обработка открытых сеток
         private static bool AssignRoles(PipelineOptions o, SceneModel scene)
