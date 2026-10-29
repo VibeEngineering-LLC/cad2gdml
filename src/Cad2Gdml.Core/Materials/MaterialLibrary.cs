@@ -138,7 +138,20 @@ namespace Cad2Gdml.Materials
         public static MaterialLibrary LoadJson(string path)
         {
             string text = File.ReadAllText(path); // FileNotFoundException при отсутствии
-            object root = Cad2Gdml.Json.MiniJson.Parse(text);
+
+            object root;
+            try
+            {
+                root = Cad2Gdml.Json.MiniJson.Parse(text);
+            }
+            catch (FormatException ex)
+            {
+                throw new InvalidDataException("E_FORMAT: " + ex.Message);
+            }
+            catch (StackOverflowException)
+            {
+                throw new InvalidDataException("E_FORMAT: слишком глубокая вложенность JSON");
+            }
 
             var dict = root as Dictionary<string, object>;
             if (dict == null)
@@ -192,7 +205,18 @@ namespace Cad2Gdml.Materials
                         string pat = pair[0] as string;
                         string mat = pair[1] as string;
                         if (pat != null && mat != null)
+                        {
+                            // проверка валидности regex на этапе загрузки
+                            try
+                            {
+                                new Regex(pat, RegexOptions.CultureInvariant);
+                            }
+                            catch (ArgumentException ex)
+                            {
+                                throw new InvalidDataException("E_FORMAT: bad regex in stl_rules: " + pat + " — " + ex.Message);
+                            }
                             fileRules.Add(new MaterialRule { Pattern = pat, Material = mat, IsGuess = false, IsFileRule = true });
+                        }
                     }
                     // Файловые правила — ПЕРВЫМИ
                     lib.Rules.InsertRange(0, fileRules);
@@ -204,9 +228,11 @@ namespace Cad2Gdml.Materials
             if (dict.TryGetValue("stl_default", out defObj))
             {
                 string ds = defObj as string;
-                if (ds != null)
+                if (ds != null && ds.Length > 0)
+                {
                     lib.DefaultMaterial = ds;
                     lib.DefaultFromFile = true;
+                }
             }
 
             // Валидация: материал правила/default должен быть определён или G4_*
@@ -246,8 +272,8 @@ namespace Cad2Gdml.Materials
                     hasD = true;
                 }
             }
-            if (!hasD || density <= 0.0)
-                throw new InvalidDataException("E_MAT_DENSITY: некорректная плотность для '" + name + "'");
+            if (!hasD || density <= 0.0 || double.IsNaN(density))
+                throw new InvalidDataException("E_MAT_BAD_VALUE: некорректная плотность для '" + name + "'");
 
             // Состав: "elements" (dict) или "fractions" (list of [ref, frac])
             var fractions = new List<KeyValuePair<string, double>>();
@@ -283,6 +309,14 @@ namespace Cad2Gdml.Materials
             }
             if (fractions.Count == 0)
                 throw new InvalidDataException("E_MAT_COMPO: пустой состав для '" + name + "'");
+
+            // Валидация долей: не отрицательные, не NaN
+            for (int i = 0; i < fractions.Count; i++)
+            {
+                double fv = fractions[i].Value;
+                if (fv < 0.0 || double.IsNaN(fv))
+                    throw new InvalidDataException("E_MAT_BAD_VALUE: некорректная доля для '" + name + "', элемент '" + fractions[i].Key + "'");
+            }
 
             // Нормализация долей
             double sum = 0.0;

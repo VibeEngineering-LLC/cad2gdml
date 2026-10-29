@@ -9,12 +9,15 @@ namespace Cad2Gdml.Json
     // Минимальный JSON-ридер/райтер без внешних пакетов
     public static class MiniJson
     {
+        // Максимальная вложенность
+        const int MaxDepth = 200;
+
         // Разбор JSON-текста в объект
         public static object Parse(string text)
         {
             if (text == null) throw new ArgumentNullException("text");
             int pos = 0;
-            object result = ParseValue(text, ref pos);
+            object result = ParseValue(text, ref pos, MaxDepth);
             SkipWs(text, ref pos);
             if (pos != text.Length)
                 throw new FormatException("Лишние символы после значения. Позиция: " + pos);
@@ -40,8 +43,8 @@ namespace Cad2Gdml.Json
             }
         }
 
-        // Разбор произвольного значения
-        static object ParseValue(string text, ref int pos)
+        // Разбор произвольного значения с контролем глубины
+        static object ParseValue(string text, ref int pos, int depth)
         {
             SkipWs(text, ref pos);
             if (pos >= text.Length)
@@ -52,8 +55,8 @@ namespace Cad2Gdml.Json
             if (c == 't') return ParseTrue(text, ref pos);
             if (c == 'f') return ParseFalse(text, ref pos);
             if (c == '"') return ParseString(text, ref pos);
-            if (c == '{') return ParseObject(text, ref pos);
-            if (c == '[') return ParseArray(text, ref pos);
+            if (c == '{') return ParseObject(text, ref pos, depth);
+            if (c == '[') return ParseArray(text, ref pos, depth);
             if (c == '-' || (c >= '0' && c <= '9')) return ParseNumber(text, ref pos);
 
             throw new FormatException("Неожиданный символ '" + c + "'. Позиция: " + pos);
@@ -184,9 +187,11 @@ namespace Cad2Gdml.Json
             }
         }
 
-        // Разбор объекта { key: value, ... }
-        static Dictionary<string, object> ParseObject(string text, ref int pos)
+        // Разбор объекта { key: value, ... } с контролем глубины
+        static Dictionary<string, object> ParseObject(string text, ref int pos, int depth)
         {
+            if (depth <= 0)
+                throw new FormatException("JSON: nesting too deep");
             pos++;
             var dict = new Dictionary<string, object>();
             SkipWs(text, ref pos);
@@ -209,7 +214,7 @@ namespace Cad2Gdml.Json
                 if (pos >= text.Length || text[pos] != ':')
                     throw new FormatException("Ожидалось ':'. Позиция: " + pos);
                 pos++;
-                object val = ParseValue(text, ref pos);
+                object val = ParseValue(text, ref pos, depth - 1);
                 dict[key] = val;
                 SkipWs(text, ref pos);
                 if (pos >= text.Length)
@@ -225,9 +230,11 @@ namespace Cad2Gdml.Json
             }
         }
 
-        // Разбор массива [ value, ... ]
-        static List<object> ParseArray(string text, ref int pos)
+        // Разбор массива [ value, ... ] с контролем глубины
+        static List<object> ParseArray(string text, ref int pos, int depth)
         {
+            if (depth <= 0)
+                throw new FormatException("JSON: nesting too deep");
             pos++;
             var list = new List<object>();
             SkipWs(text, ref pos);
@@ -240,7 +247,7 @@ namespace Cad2Gdml.Json
             }
             while (true)
             {
-                object val = ParseValue(text, ref pos);
+                object val = ParseValue(text, ref pos, depth - 1);
                 list.Add(val);
                 SkipWs(text, ref pos);
                 if (pos >= text.Length)

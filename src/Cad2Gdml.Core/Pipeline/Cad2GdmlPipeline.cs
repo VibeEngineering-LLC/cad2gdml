@@ -67,7 +67,7 @@ namespace Cad2Gdml.Pipeline
                 catch (Exception lex) when (lex is FileNotFoundException || lex is DirectoryNotFoundException
                     || lex is InvalidDataException || lex is FormatException || lex is IOException
                     || lex is ArgumentException || lex is OverflowException || lex is IndexOutOfRangeException
-                    || lex is ArgumentOutOfRangeException)
+                    || lex is ArgumentOutOfRangeException || lex is UnauthorizedAccessException)
                 {
                     scene.Add(MapExceptionCode(lex), DiagSeverity.Error, "", lex.Message);
                     return Fail(result);
@@ -102,7 +102,8 @@ namespace Cad2Gdml.Pipeline
                 }
                 catch (Exception lex)
                 {
-                    scene.Add("E_FORMAT", DiagSeverity.Error, "", "Не удалось записать результат: " + lex.Message);
+                    string code = ExtractMatCode(lex);
+                    scene.Add(code, DiagSeverity.Error, "", "Не удалось записать результат: " + lex.Message);
                     return Fail(result);
                 }
 
@@ -123,7 +124,25 @@ namespace Cad2Gdml.Pipeline
             {
                 string msg = ex.Message;
                 if (msg != null && msg.StartsWith("E_"))
-                    return msg;
+                {
+                    int sep = msg.IndexOfAny(new char[] { ':', ' ' });
+                    return (sep > 0) ? msg.Substring(0, sep) : msg;
+                }
+            }
+            return "E_FORMAT";
+        }
+
+        // Извлечение кода E_MAT_/E_ELEMENT_ из InvalidDataException
+        private static string ExtractMatCode(Exception ex)
+        {
+            if (ex is InvalidDataException)
+            {
+                string msg = ex.Message;
+                if (msg != null && (msg.StartsWith("E_MAT_") || msg.StartsWith("E_ELEMENT_")))
+                {
+                    int sep = msg.IndexOfAny(new char[] { ':', ' ' });
+                    return (sep > 0) ? msg.Substring(0, sep) : msg;
+                }
             }
             return "E_FORMAT";
         }
@@ -367,7 +386,7 @@ namespace Cad2Gdml.Pipeline
 
             FrameBuilder.Apply(scene, t);
 
-            // Проверка: источник/контейнер позади переднего торца
+            // Проверка: источник/контейнер полностью позади переднего торца
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -375,8 +394,7 @@ namespace Cad2Gdml.Pipeline
                 if (p.Mesh == null) continue;
                 Vec3d mn, mx;
                 p.Mesh.GetBounds(out mn, out mx);
-                double cz = (mn.Z + mx.Z) * 0.5;
-                if (cz < 0.0)
+                if (mx.Z <= 0.001)
                 {
                     scene.Add("W_SOURCE_BEHIND", DiagSeverity.Warning, p.Name,
                         "Источник расположен позади переднего торца кристалла: проверьте --front");
@@ -434,7 +452,6 @@ namespace Cad2Gdml.Pipeline
             }
             catch (InvalidDataException ex)
             {
-                // Извлекаем код из сообщения вида "E_MAT_UNKNOWN: ..."
                 string msg = ex.Message;
                 string code;
                 if (msg != null && msg.StartsWith("E_"))
@@ -494,7 +511,7 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Запись GDML, PNG, отчёта — атомарно через временные файлы
+        // Атомарная запись GDML, PNG, отчёта
         private static bool WriteOutputs(PipelineOptions o, SceneModel scene, PipelineResult result)
         {
             string outDir = (o.OutDir != null && o.OutDir.Length > 0) ? o.OutDir : ".";
@@ -520,55 +537,50 @@ namespace Cad2Gdml.Pipeline
             else
                 lib = MaterialLibrary.Default();
 
-            // Рендер в памяти: PNG-битмап и текст отчёта
+            // Рендер в памяти
             var sketch = SketchBuilder.Build(scene);
             Bitmap pngBitmap = GdiSketchRenderer.Render(sketch, 1200, 800);
 
             string srcDesc = string.Join("; ", GetInputNames(scene));
             string report = SceneDescriber.Describe(scene, srcDesc, gdmlPath);
 
-            // Запись во временные файлы
             GdmlWriteResult gdmlResult;
             try
             {
+                // Запись во временные файлы
                 gdmlResult = GdmlWriter.Write(scene, lib, gdmlTmp);
                 pngBitmap.Save(pngTmp, ImageFormat.Png);
                 File.WriteAllText(reportTmp, report, new UTF8Encoding(false));
+
+                // Перенос: Replace если цель существует, иначе Move
+                if (File.Exists(gdmlPath))
+                    File.Replace(gdmlTmp, gdmlPath, null);
+                else
+                    File.Move(gdmlTmp, gdmlPath);
+
+                if (File.Exists(pngPath))
+                    File.Replace(pngTmp, pngPath, null);
+                else
+                    File.Move(pngTmp, pngPath);
+
+                if (File.Exists(reportPath))
+                    File.Replace(reportTmp, reportPath, null);
+                else
+                    File.Move(reportTmp, reportPath);
             }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
-                || ex is FileNotFoundException || ex is DirectoryNotFoundException
-                || ex is InvalidDataException || ex is FormatException || ex is ArgumentException
-                || ex is NotSupportedException)
+            catch (Exception ex)
             {
+                // Удаляем все созданные .tmp, старые файлы не трогаем
                 CleanupTemp(gdmlTmp, pngTmp, reportTmp);
-                string msg = "Не удалось записать результат: " + ex.Message;
-                scene.Add("E_FORMAT", DiagSeverity.Error, "", msg);
+
+                // Определяем код ошибки
+                string code = ExtractMatCode(ex);
+                scene.Add(code, DiagSeverity.Error, "", "Не удалось записать результат: " + ex.Message);
                 return false;
             }
             finally
             {
                 if (pngBitmap != null) pngBitmap.Dispose();
-            }
-
-            // Перенос временных → финальных
-            try
-            {
-                if (File.Exists(gdmlPath)) File.Delete(gdmlPath);
-                if (File.Exists(pngPath)) File.Delete(pngPath);
-                if (File.Exists(reportPath)) File.Delete(reportPath);
-
-                File.Move(gdmlTmp, gdmlPath);
-                File.Move(pngTmp, pngPath);
-                File.Move(reportTmp, reportPath);
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
-                || ex is FileNotFoundException || ex is DirectoryNotFoundException
-                || ex is ArgumentException)
-            {
-                CleanupTemp(gdmlTmp, pngTmp, reportTmp);
-                string msg = "Не удалось записать результат: " + ex.Message;
-                scene.Add("E_FORMAT", DiagSeverity.Error, "", msg);
-                return false;
             }
 
             result.Gdml = gdmlResult;
@@ -668,7 +680,7 @@ namespace Cad2Gdml.Pipeline
             if (code.StartsWith("E_ROLE") || code.StartsWith("E_FRONT_AMBIG")
                 || code.StartsWith("E_AXIS_AMBIG"))
                 return 4;
-            if (code.StartsWith("E_MAT") || code.StartsWith("E_ELEMENT_UNKNOWN"))
+            if (code.StartsWith("E_MAT") || code.StartsWith("E_ELEMENT"))
                 return 5;
             return 9;
         }

@@ -82,7 +82,7 @@ namespace Cad2Gdml.App
 
             // Замечание про 3MF
             var lblUnitNote = new Label();
-            lblUnitNote.Text = "для 3MF: из файла";
+            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF)";
             lblUnitNote.Font = new Font(this.Font, FontStyle.Italic);
             lblUnitNote.AutoSize = true;
             lblUnitNote.Location = new Point(204, 38);
@@ -313,6 +313,15 @@ namespace Cad2Gdml.App
                 return;
             }
 
+            // Проверка на смешанные входы 3MF + STL/OBJ
+            if (HasMixedInputs(inputs))
+            {
+                MessageBox.Show(this,
+                    "Смешанные входы 3MF и STL/OBJ: конвертируйте раздельно",
+                    "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
             // Если все входы — 3MF, передаём 0 (единицы из файла); иначе — значение из ComboBox
             double unitToMm;
             if (AllAre3Mf(inputs))
@@ -357,9 +366,36 @@ namespace Cad2Gdml.App
 
             if (result.ExitCode != 0)
             {
-                // Показываем первый Error-код и сообщение
-                string msg = result.MainErrorId + " — " + result.MainErrorMessage;
-                SetStatus(msg, false);
+                // Очищаем картинку от предыдущего успешного прогона
+                if (_picSketch.Image != null)
+                {
+                    _picSketch.Image.Dispose();
+                    _picSketch.Image = null;
+                }
+
+                // Формируем статус: Сбой (код N): ID — сообщение
+                int exitCode = result.ExitCode;
+                string statusLine;
+                if (!string.IsNullOrEmpty(result.MainErrorId))
+                {
+                    statusLine = "Сбой (код " + exitCode.ToString(CultureInfo.InvariantCulture) + "): "
+                        + result.MainErrorId + " — " + result.MainErrorMessage;
+                }
+                else
+                {
+                    // MainErrorId пуст — берём сообщение последней диагностики
+                    string lastMsg = "";
+                    if (result.Diagnostics != null && result.Diagnostics.Count > 0)
+                    {
+                        Diagnostic last = result.Diagnostics[result.Diagnostics.Count - 1];
+                        lastMsg = last.Message;
+                    }
+                    statusLine = "Сбой (код " + exitCode.ToString(CultureInfo.InvariantCulture) + "): " + lastMsg;
+                }
+                SetStatus(statusLine, false);
+
+                // Показываем диагностику сбойного прогона в отчёте
+                RenderFailureReport(result);
                 return;
             }
 
@@ -384,7 +420,30 @@ namespace Cad2Gdml.App
             RenderReport(result);
         }
 
-        // Формирование текста отчёта
+        // Отчёт для сбойного прогона
+        private void RenderFailureReport(PipelineResult result)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("=== СБОЙ КОНВЕРТАЦИИ ===");
+
+            if (result.Diagnostics != null && result.Diagnostics.Count > 0)
+            {
+                sb.AppendLine("Диагностика:");
+                for (int i = 0; i < result.Diagnostics.Count; i++)
+                {
+                    Diagnostic d = result.Diagnostics[i];
+                    sb.AppendLine("  [" + d.Code + "] " + d.PartName + ": " + d.Message);
+                }
+            }
+            else
+            {
+                sb.AppendLine("Диагностика отсутствует.");
+            }
+
+            _txtReport.Text = sb.ToString();
+        }
+
+        // Формирование текста отчёта (успешный прогон)
         private void RenderReport(PipelineResult result)
         {
             var sb = new StringBuilder();
@@ -453,6 +512,22 @@ namespace Cad2Gdml.App
                     return false;
             }
             return true;
+        }
+
+        // Смешаны ли 3MF и не-3MF в одном списке
+        private static bool HasMixedInputs(List<string> files)
+        {
+            bool has3mf = false;
+            bool hasOther = false;
+            for (int i = 0; i < files.Count; i++)
+            {
+                string ext = Path.GetExtension(files[i]);
+                if (ext != null && ext.ToLowerInvariant() == ".3mf")
+                    has3mf = true;
+                else
+                    hasOther = true;
+            }
+            return has3mf && hasOther;
         }
 
         // Вкл/выкл во время конвертации

@@ -15,7 +15,7 @@ namespace Cad2Gdml.Import
     public static class ThreeMfImporter
     {
         private const int MaxDepth = 32;
-        private const int MaxTotalTriangles = 50000000;
+        private const long MaxTrianglesPerItem = 5000000L;
 
         // Безопасный разбор числа: запятая = ошибка, NaN/Inf = ошибка
         private static double SafeParse(string s, string ctx)
@@ -159,12 +159,28 @@ namespace Cad2Gdml.Import
                         throw new InvalidDataException("3MF: empty model (no build items)");
                     }
 
+                    // Предварительный подсчёт: треугольники каждого build item, без сборки мешей
+                    Dictionary<string, long> countCache = new Dictionary<string, long>();
+                    for (int i = 0; i < buildItems.Count; i++)
+                    {
+                        XElement item = buildItems[i];
+                        string objectId = GetAttr(item, "objectid");
+                        if (string.IsNullOrEmpty(objectId))
+                        {
+                            continue;
+                        }
+                        long cnt = CountObjectTriangles(objects, objectId, new HashSet<string>(), 0, countCache);
+                        if (cnt > MaxTrianglesPerItem)
+                        {
+                            throw new InvalidDataException("3MF: too large");
+                        }
+                    }
+
                     // Кэш локальных мешей по id объекта
                     Dictionary<string, Mesh> localCache = new Dictionary<string, Mesh>();
                     HashSet<string> resolving = new HashSet<string>();
 
                     Dictionary<string, int> nameCounters = new Dictionary<string, int>();
-                    long totalTriangles = 0;
 
                     for (int i = 0; i < buildItems.Count; i++)
                     {
@@ -206,6 +222,12 @@ namespace Cad2Gdml.Import
                         // Локальный меш (в модельных единицах, без трансформации build item)
                         Mesh local = ResolveLocal(objects, objectId, resolving, 0, localCache);
 
+                        // Контроль лимита на этапе сборки (страховка)
+                        if (local.TriangleCount > MaxTrianglesPerItem)
+                        {
+                            throw new InvalidDataException("3MF: too large");
+                        }
+
                         // Применяем трансформацию build item
                         Mesh transformed = local.Transformed(itemTf);
 
@@ -217,12 +239,6 @@ namespace Cad2Gdml.Import
                             scaled.Vertices.Add(new Vec3d(p.X * unitToMm, p.Y * unitToMm, p.Z * unitToMm));
                         }
                         scaled.Indices.AddRange(transformed.Indices);
-
-                        totalTriangles += scaled.TriangleCount;
-                        if (totalTriangles > MaxTotalTriangles)
-                        {
-                            throw new InvalidDataException("3MF: too large");
-                        }
 
                         Part part = new Part();
                         part.Name = finalName;
@@ -236,6 +252,104 @@ namespace Cad2Gdml.Import
             }
 
             return parts;
+        }
+
+        // Подсчёт треугольников в элементе <mesh>
+        private static long CountMeshTriangles(XElement meshEl)
+        {
+            long count = 0;
+            XElement trianglesEl = FindElement(meshEl, "triangles");
+            if (trianglesEl != null)
+            {
+                foreach (XElement tEl in trianglesEl.Elements())
+                {
+                    if (tEl.Name.LocalName == "triangle")
+                    {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+
+        // Рекурсивный подсчёт треугольников объекта без сборки меша; насыщение при переполнении
+        private static long CountObjectTriangles(
+            Dictionary<string, XElement> objects,
+            string objectId,
+            HashSet<string> resolving,
+            int depth,
+            Dictionary<string, long> cache)
+        {
+            // Проверка глубины
+            if (depth > MaxDepth)
+            {
+                throw new InvalidDataException("3MF: component depth exceeded");
+            }
+
+            // Обнаружение цикла
+            if (resolving.Contains(objectId))
+            {
+                throw new InvalidDataException("3MF: component cycle");
+            }
+
+            // Кэш: объект уже посчитан
+            long cached;
+            if (cache.TryGetValue(objectId, out cached))
+            {
+                return cached;
+            }
+
+            XElement objEl;
+            if (!objects.TryGetValue(objectId, out objEl))
+            {
+                throw new InvalidDataException("3MF: unknown object id: " + objectId);
+            }
+
+            resolving.Add(objectId);
+            try
+            {
+                long count = 0;
+
+                XElement meshEl = FindElement(objEl, "mesh");
+                if (meshEl != null)
+                {
+                    count = CountMeshTriangles(meshEl);
+                }
+
+                XElement componentsEl = FindElement(objEl, "components");
+                if (componentsEl != null)
+                {
+                    foreach (XElement comp in componentsEl.Elements())
+                    {
+                        if (comp.Name.LocalName != "component")
+                        {
+                            continue;
+                        }
+                        string childId = GetAttr(comp, "objectid");
+                        if (string.IsNullOrEmpty(childId))
+                        {
+                            continue;
+                        }
+                        long childCount = CountObjectTriangles(objects, childId, resolving, depth + 1, cache);
+                        // Насыщающее сложение
+                        if (long.MaxValue - count < childCount)
+                        {
+                            count = long.MaxValue;
+                        }
+                        else
+                        {
+                            count += childCount;
+                        }
+                    }
+                }
+
+                cache[objectId] = count;
+                return count;
+            }
+            finally
+            {
+                resolving.Remove(objectId);
+            }
         }
 
         // Поиск пути модели в ZIP-архиве

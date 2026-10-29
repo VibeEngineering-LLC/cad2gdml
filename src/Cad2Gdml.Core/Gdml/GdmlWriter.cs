@@ -202,12 +202,37 @@ namespace Cad2Gdml.Gdml
         private static void Add(Dictionary<string, int> d, string k, int v) { d[k] = v; }
         private static void AddA(Dictionary<string, double> d, string k, double v) { d[k] = v; }
 
-        // Числовой формат
+        // Числовой формат для координат и размеров (мм)
         private static string Fmt(double v)
         {
             v = Math.Round(v, 4);
             if (v == 0.0) return "0";
             return v.ToString("0.######", CultureInfo.InvariantCulture);
+        }
+
+        // Точный формат для плотностей, долей, атомных масс — 9 значащих цифр
+        private static string FmtPrecise(double v)
+        {
+            string result;
+            if (Math.Abs(v) >= 1e-4)
+            {
+                result = v.ToString("G9", CultureInfo.InvariantCulture);
+                // Защита от экспоненты при аномально крупных значениях
+                if (result.IndexOf('E') >= 0 || result.IndexOf('e') >= 0)
+                {
+                    result = v.ToString("0.#########", CultureInfo.InvariantCulture);
+                }
+            }
+            else
+            {
+                result = v.ToString("0.#########", CultureInfo.InvariantCulture);
+            }
+
+            if (result == "0" || result == "-0")
+            {
+                throw new InvalidDataException("E_MAT_BAD_VALUE: значение " + v.ToString("R", CultureInfo.InvariantCulture) + " округляется до нуля");
+            }
+            return result;
         }
 
         // XML-экранирование
@@ -230,6 +255,34 @@ namespace Cad2Gdml.Gdml
                 case PartRole.Housing: return "housing";
                 default: return "other";
             }
+        }
+
+        // Каноническое имя элемента из таблицы
+        private static string CanonicalElementName(string key)
+        {
+            foreach (KeyValuePair<string, int> kv in ElZ)
+            {
+                if (string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase))
+                    return kv.Key;
+            }
+            return key;
+        }
+
+        // Разрешение ссылки в fraction/materialref на каноническое имя
+        private static string ResolveRef(string key, MaterialLibrary lib)
+        {
+            if (key == null) return null;
+            if (key.StartsWith("G4_", StringComparison.Ordinal)) return key;
+
+            // Сначала — таблица элементов
+            string canonElem = CanonicalElementName(key);
+            if (canonElem != key) return canonElem;
+
+            // Затем — библиотека материалов
+            MaterialDef def = lib.Find(key);
+            if (def != null) return def.Name;
+
+            return key;
         }
 
         public static GdmlWriteResult Write(SceneModel scene, MaterialLibrary lib, string path)
@@ -398,7 +451,8 @@ namespace Cad2Gdml.Gdml
                     {
                         string key = def.MassFractions[fi].Key;
                         if (key.StartsWith("G4_", StringComparison.Ordinal)) continue;
-                        MaterialDef refDef = lib.Find(key);
+                        string canonKey = ResolveRef(key, lib);
+                        MaterialDef refDef = lib.Find(canonKey);
                         if (refDef != null && !refDef.IsNist && !matsToWrite.Contains(refDef.Name))
                         {
                             toAdd.Add(refDef.Name);
@@ -419,10 +473,11 @@ namespace Cad2Gdml.Gdml
                 {
                     string key = def.MassFractions[fi].Key;
                     if (key.StartsWith("G4_", StringComparison.Ordinal)) continue;
+                    string canonKey = ResolveRef(key, lib);
                     // Если это имя материала в библиотеке — не элемент
-                    MaterialDef refDef = lib.Find(key);
+                    MaterialDef refDef = lib.Find(canonKey);
                     if (refDef != null) continue;
-                    neededElements.Add(key);
+                    neededElements.Add(canonKey);
                 }
             }
 
@@ -434,10 +489,13 @@ namespace Cad2Gdml.Gdml
                 if (!ElA.TryGetValue(elem, out a))
                     throw new InvalidDataException("E_ELEMENT_UNKNOWN: " + elem);
 
-                xml.Append("    <element name=\"").Append(XmlEsc(elem))
-                   .Append("\" formula=\"").Append(XmlEsc(elem))
+                // Каноническое имя элемента из таблицы
+                string canonElem = CanonicalElementName(elem);
+
+                xml.Append("    <element name=\"").Append(XmlEsc(canonElem))
+                   .Append("\" formula=\"").Append(XmlEsc(canonElem))
                    .Append("\" Z=\"").Append(z.ToString(CultureInfo.InvariantCulture))
-                   .Append("\"><atom value=\"").Append(Fmt(a)).Append("\"/></element>");
+                   .Append("\"><atom value=\"").Append(FmtPrecise(a)).Append("\"/></element>");
                 xml.AppendLine();
             }
 
@@ -451,7 +509,7 @@ namespace Cad2Gdml.Gdml
 
                 xml.Append("    <material name=\"").Append(XmlEsc(def.Name)).Append("\" state=\"solid\">");
                 xml.AppendLine();
-                xml.Append("      <D value=\"").Append(Fmt(def.DensityGcm3)).Append("\" unit=\"g/cm3\"/>");
+                xml.Append("      <D value=\"").Append(FmtPrecise(def.DensityGcm3)).Append("\" unit=\"g/cm3\"/>");
                 xml.AppendLine();
                 if (def.MassFractions != null)
                 {
@@ -459,8 +517,9 @@ namespace Cad2Gdml.Gdml
                     {
                         string sym = def.MassFractions[fi].Key;
                         double frac = def.MassFractions[fi].Value;
-                        xml.Append("      <fraction n=\"").Append(Fmt(frac))
-                           .Append("\" ref=\"").Append(XmlEsc(sym)).Append("\"/>");
+                        string canonRef = ResolveRef(sym, lib);
+                        xml.Append("      <fraction n=\"").Append(FmtPrecise(frac))
+                           .Append("\" ref=\"").Append(XmlEsc(canonRef)).Append("\"/>");
                         xml.AppendLine();
                     }
                 }
@@ -674,7 +733,8 @@ namespace Cad2Gdml.Gdml
                 {
                     string key = def.MassFractions[fi].Key;
                     if (key.StartsWith("G4_", StringComparison.Ordinal)) continue;
-                    MaterialDef refDef = lib.Find(key);
+                    string canonKey = ResolveRef(key, lib);
+                    MaterialDef refDef = lib.Find(canonKey);
                     if (refDef != null && !refDef.IsNist && mats.Contains(refDef.Name))
                     {
                         VisitMat(refDef.Name, mats, lib, visited, inStack, order);
