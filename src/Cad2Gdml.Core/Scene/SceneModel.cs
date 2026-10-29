@@ -95,6 +95,7 @@ namespace Cad2Gdml.Scene
         public SolidShape Shape { get; set; }
         public double VolumeMm3 { get; set; }
         public string SourceFile { get; set; }
+        public bool MeshOpen { get; set; } // у сетки остались открытые рёбра
     }
 
     // Модель сцены: детали + диагностика

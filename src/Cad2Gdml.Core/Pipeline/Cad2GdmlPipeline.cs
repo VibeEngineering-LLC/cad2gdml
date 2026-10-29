@@ -63,7 +63,7 @@ namespace Cad2Gdml.Pipeline
 
                 // 3. Роли
                 if (!AssignRoles(o, scene))
-                    return Fail(result, 4);
+                    return Fail(result, scene.Diagnostics.Exists(d => d.Code == "E_MESH_OPEN") ? 3 : 4);
 
                 // 4. Кадр координат
                 if (!BuildFrame(o, scene))
@@ -101,8 +101,8 @@ namespace Cad2Gdml.Pipeline
 
             foreach (string input in o.Inputs)
             {
-                string ext = GetExt(input);
 
+                // STEP — не поддерживается
                 string ext = Directory.Exists(input) ? ".stl" : GetExt(input);
                 if (ext == ".step" || ext == ".stp")
                 {
@@ -194,9 +194,8 @@ namespace Cad2Gdml.Pipeline
                 var topo = MeshTopology.Analyze(p.Mesh);
                 if (topo.OpenEdges > 0)
                 {
-                    scene.Add("E_MESH_OPEN", DiagSeverity.Error, p.Name,
-                        "Открытых рёбер: " + topo.OpenEdges.ToString(CultureInfo.InvariantCulture) + ".");
-                    return false;
+                    p.MeshOpen = true;
+                    continue;
                 }
 
                 // Знаковый объём
@@ -233,6 +232,20 @@ namespace Cad2Gdml.Pipeline
         {
             var roleOpt = new RoleOptions();
             RoleAssigner.Assign(scene, roleOpt, o.CrystalName);
+
+            // Открытые сетки: у кристалла/образца/сосуда — ошибка, у прочих деталь отбрасывается с предупреждением
+            for (int oi = scene.Parts.Count - 1; oi >= 0; oi--)
+            {
+                Part op = scene.Parts[oi];
+                if (!op.MeshOpen) continue;
+                if (op.Role == PartRole.Crystal || op.Role == PartRole.Source || op.Role == PartRole.Container)
+                {
+                    scene.Add("E_MESH_OPEN", DiagSeverity.Error, op.Name, "Открытая сетка у ключевой детали.");
+                    return false;
+                }
+                scene.Add("W_MESH_OPEN_DROPPED", DiagSeverity.Warning, op.Name, "Сетка открыта — деталь исключена из сцены.");
+                scene.Parts.RemoveAt(oi);
+            }
 
             // Ошибка ролей
             for (int i = 0; i < scene.Diagnostics.Count; i++)
