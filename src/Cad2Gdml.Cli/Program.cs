@@ -1,0 +1,240 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using Cad2Gdml.Pipeline;
+using Cad2Gdml.Scene;
+
+namespace Cad2Gdml.Cli
+{
+    // Точка входа CLI
+    public static class Program
+    {
+        public static int Main(string[] args)
+        {
+            // Справка
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--help" || args[i] == "-h")
+                {
+                    PrintUsage();
+                    return 0;
+                }
+            }
+
+            if (args.Length == 0)
+            {
+                PrintUsage();
+                return 0;
+            }
+
+            // Разбор аргументов
+            var inputs = new List<string>();
+            string outDir = null;
+            string baseName = null;
+            string unit = null;
+            string crystal = null;
+            string front = null;
+            string materials = null;
+            bool allowDefault = false;
+
+            int idx = 0;
+            while (idx < args.Length)
+            {
+                string a = args[idx];
+
+                if (a == "--out")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --out."); return 2; }
+                    outDir = args[++idx];
+                }
+                else if (a == "--name")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --name."); return 2; }
+                    baseName = args[++idx];
+                }
+                else if (a == "--unit")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --unit."); return 2; }
+                    unit = args[++idx];
+                }
+                else if (a == "--crystal")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --crystal."); return 2; }
+                    crystal = args[++idx];
+                }
+                else if (a == "--front")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --front."); return 2; }
+                    front = args[++idx];
+                }
+                else if (a == "--materials")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --materials."); return 2; }
+                    materials = args[++idx];
+                }
+                else if (a == "--allow-default-material")
+                {
+                    allowDefault = true;
+                }
+                else if (a.Length > 2 && a[0] == '-' && a[1] == '-')
+                {
+                    Console.Error.WriteLine("Неизвестный параметр: " + a);
+                    return 2;
+                }
+                else
+                {
+                    inputs.Add(a);
+                }
+
+                idx++;
+            }
+
+            // Валидация обязательных полей
+            if (outDir == null)
+            {
+                Console.Error.WriteLine("Не задан --out.");
+                return 2;
+            }
+            if (inputs.Count == 0)
+            {
+                Console.Error.WriteLine("Не заданы входные файлы.");
+                return 2;
+            }
+
+            // Конвертация единиц
+            double unitToMm = 0.0;
+            if (unit != null)
+            {
+                if (unit == "mm") unitToMm = 1.0;
+                else if (unit == "cm") unitToMm = 10.0;
+                else if (unit == "m") unitToMm = 1000.0;
+                else if (unit == "inch") unitToMm = 25.4;
+                else
+                {
+                    Console.Error.WriteLine("Недопустимые единицы: " + unit);
+                    return 2;
+                }
+            }
+
+            // Проверка --front
+            if (front != null && front != "+z" && front != "-z")
+            {
+                Console.Error.WriteLine("Недопустимый --front: " + front + " (ожидается +z или -z).");
+                return 2;
+            }
+
+            // Сборка опций конвейера
+            var opt = new PipelineOptions
+            {
+                Inputs = inputs,
+                OutDir = outDir,
+                BaseName = baseName,
+                UnitToMm = unitToMm,
+                UnitName = unit,
+                CrystalName = crystal,
+                FrontSign = front,
+                MaterialsJsonPath = materials,
+                AllowDefaultMaterial = allowDefault
+            };
+
+            // Запуск конвейера
+            PipelineResult result;
+            try
+            {
+                result = Cad2GdmlPipeline.Run(opt);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Внутренняя ошибка: " + ex.Message);
+                return 1;
+            }
+
+            // Печать русскоязычного итога
+            PrintSummary(result);
+
+            return result.ExitCode;
+        }
+
+        // Вывод справки
+        private static void PrintUsage()
+        {
+            Console.WriteLine("Использование: cad2gdml <вход>... --out <каталог> [параметры]");
+            Console.WriteLine();
+            Console.WriteLine("Параметры:");
+            Console.WriteLine("  --out <каталог>            Каталог вывода (обязательно)");
+            Console.WriteLine("  --name <база>              Базовое имя выходных файлов");
+            Console.WriteLine("  --unit mm|cm|m|inch        Единицы входных файлов");
+            Console.WriteLine("  --crystal <имя>            Имя детали-кристалла");
+            Console.WriteLine("  --front +z|-z              Направление передней грани");
+            Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
+            Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
+            Console.WriteLine("  --help, -h                 Эта справка");
+        }
+
+        // Итоговая печать: счётчики, пути, sha256, диагностика
+        private static void PrintSummary(PipelineResult result)
+        {
+            Console.WriteLine("=== cad2gdml: итог ===");
+            Console.WriteLine("Код выхода: " + result.ExitCode.ToString(CultureInfo.InvariantCulture));
+
+            // Счётчики GDML
+            if (result.Gdml != null)
+            {
+                Console.WriteLine("Объёмов: " + result.Gdml.Volumes.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("Тесселированных: " + result.Gdml.Tessellated.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("Треугольников: " + result.Gdml.Triangles.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("Труб: " + result.Gdml.Tubes.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("Поликонусов: " + result.Gdml.Polycones.ToString(CultureInfo.InvariantCulture));
+                Console.WriteLine("Боксов: " + result.Gdml.Boxes.ToString(CultureInfo.InvariantCulture));
+            }
+
+            // Пути выходных файлов
+            if (!string.IsNullOrEmpty(result.GdmlPath))
+                Console.WriteLine("GDML: " + result.GdmlPath);
+            if (!string.IsNullOrEmpty(result.PngPath))
+                Console.WriteLine("PNG: " + result.PngPath);
+            if (!string.IsNullOrEmpty(result.ReportPath))
+                Console.WriteLine("Отчёт: " + result.ReportPath);
+
+            // SHA-256
+            if (result.Gdml != null && !string.IsNullOrEmpty(result.Gdml.Sha256))
+                Console.WriteLine("SHA-256: " + result.Gdml.Sha256);
+
+            // Диагностика
+            if (result.Diagnostics != null && result.Diagnostics.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Диагностика:");
+                for (int i = 0; i < result.Diagnostics.Count; i++)
+                {
+                    Diagnostic d = result.Diagnostics[i];
+                    Console.WriteLine("  " + d.Code + " [" + d.Severity.ToString() + "] "
+                        + (string.IsNullOrEmpty(d.PartName) ? "" : d.PartName + ": ")
+                        + d.Message);
+                }
+            }
+
+            // Финальная строка по формату дизайна
+            string id = GetCodeId(result.ExitCode);
+            Console.WriteLine();
+            Console.WriteLine("cad2gdml: код " + result.ExitCode.ToString(CultureInfo.InvariantCulture) + " " + id);
+        }
+
+        // Соответствие кода выхода → идентификатор
+        private static string GetCodeId(int code)
+        {
+            switch (code)
+            {
+                case 0: return "—";
+                case 1: return "E_INTERNAL";
+                case 2: return "E_FORMAT";
+                case 3: return "E_MESH_OPEN";
+                case 4: return "E_ROLE_NONE";
+                case 5: return "E_MAT_UNASSIGNED";
+                case 6: return "E_OVERLAP";
+                case 7: return "E_STRICT";
+                default: return "E_UNKNOWN";
+            }
+        }
+    }
+}
