@@ -31,7 +31,7 @@ namespace Cad2Gdml.Recognize
                 return null;
             }
 
-            double tol = opt.RevTolMm;
+            double tol = opt.RevTolMm > 1e-9 ? opt.RevTolMm : 0.01; // защита от деления на ноль
 
             // Позиция оси: центр bounding box
             Vec3d bMin, bMax;
