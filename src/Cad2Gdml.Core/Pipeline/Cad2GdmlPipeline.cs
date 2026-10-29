@@ -66,7 +66,7 @@ namespace Cad2Gdml.Pipeline
                 }
                 catch (Exception lex) when (lex is FileNotFoundException || lex is DirectoryNotFoundException
                     || lex is InvalidDataException || lex is FormatException || lex is IOException
-                    || lex is OverflowException || lex is IndexOutOfRangeException
+                    || lex is ArgumentException || lex is OverflowException || lex is IndexOutOfRangeException
                     || lex is ArgumentOutOfRangeException)
                 {
                     scene.Add(MapExceptionCode(lex), DiagSeverity.Error, "", lex.Message);
