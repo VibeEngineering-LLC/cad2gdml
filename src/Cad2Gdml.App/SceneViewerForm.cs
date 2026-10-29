@@ -193,6 +193,7 @@ namespace Cad2Gdml.App
 
             // Заполнение строк: сначала детали сцены, затем дополнительные
             var sceneNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var dupSeen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             if (_scene != null)
             {
                 foreach (Part p in _scene.Parts)
@@ -205,7 +206,11 @@ namespace Cad2Gdml.App
                     _rowNames.Add(p.Name);
                     _autoMats.Add(matRu);
                     _isScenePart.Add(true);
-                    _grid.Rows.Add(true, p.Name, RoleToRu(p.Role), matRu);
+                    int seen;
+                    dupSeen.TryGetValue(p.Name, out seen);
+                    dupSeen[p.Name] = seen + 1;
+                    string shown = seen == 0 ? p.Name : p.Name + " (" + (seen + 1) + ")";
+                    _grid.Rows.Add(true, shown, RoleToRu(p.Role), matRu);
                 }
             }
 

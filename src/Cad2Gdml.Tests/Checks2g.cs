@@ -49,6 +49,7 @@ namespace Cad2Gdml.Tests
             // Запуск в потоке с таймаутом
             PipelineResult r = null;
             var t = new Thread(() => { r = Cad2GdmlPipeline.Run(opt); });
+            t.IsBackground = true;
             t.Start();
             if (!t.Join(30000))
                 throw new InvalidOperationException("зависание GdmlName.Make");
@@ -127,6 +128,7 @@ namespace Cad2Gdml.Tests
                     res.Add(GdmlName.Make(raw, used));
                 results = res;
             });
+            t.IsBackground = true;
             t.Start();
             if (!t.Join(10000))
                 throw new InvalidOperationException("зависание GdmlName.Make");

@@ -160,7 +160,7 @@ def main():
         env['PYTHONIOENCODING'] = 'utf-8'
         cmd = [
             'python',
-            r'«локальный путь»',
+            os.environ.get('GEN_CODE_PY', 'gen_code.py'),
             prompt_md, target_path, '30000', '49152', 'qwen3.8:27b'
         ]
         t0 = time.time()
