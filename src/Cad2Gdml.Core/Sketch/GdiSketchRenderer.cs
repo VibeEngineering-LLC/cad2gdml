@@ -119,59 +119,184 @@ namespace Cad2Gdml.Sketch
             }
         }
 
-        // Подписи деталей (9 pt, по центру) с анти-наложением
+        // Подписи деталей: режим 1 — обычная надпись, режим 2 — нумерованный бейдж
         private static void DrawLabels(Graphics g, SketchModel m, float sc, float ox, float oy)
         {
-            using (Font f = new Font("Segoe UI", 9f))
-            using (SolidBrush br = new SolidBrush(Color.FromArgb(60, 60, 60)))
-            using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center })
-            using (Pen leaderPen = new Pen(Color.FromArgb(60, 60, 60), 1f))
+            using (Font labelFont = new Font("Segoe UI", 9f))
+            using (SolidBrush labelBr = new SolidBrush(Color.FromArgb(60, 60, 60)))
+            using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
             {
                 List<RectangleF> drawn = new List<RectangleF>();
+                List<KeyValuePair<int, string>> badges = new List<KeyValuePair<int, string>>(); // n → Label
+
+                int badgeNum = 0;
 
                 foreach (SketchRegion r in m.Regions)
                 {
                     if (r.Points == null || r.Points.Count < 2) continue;
                     if (string.IsNullOrEmpty(r.Label)) continue;
 
+                    // Экранный bbox региона
+                    float bnX = float.MaxValue, bxX = float.MinValue, bnZ = float.MaxValue, bxZ = float.MinValue;
+                    foreach (Vec3d p in r.Points)
+                    {
+                        PointF sp = TS((float)p.X, (float)p.Z, sc, ox, oy);
+                        if (sp.X < bnX) bnX = sp.X;
+                        if (sp.X > bxX) bxX = sp.X;
+                        if (sp.Y < bnZ) bnZ = sp.Y;
+                        if (sp.Y > bxZ) bxZ = sp.Y;
+                    }
+                    float boxW = bxX - bnX;
+                    float boxH = bxZ - bnZ;
+
+                    // Центр региона
                     float cx = 0, cz = 0;
                     foreach (Vec3d p in r.Points) { cx += (float)p.X; cz += (float)p.Z; }
                     cx /= r.Points.Count; cz /= r.Points.Count;
-
                     PointF anchor = TS(cx, cz, sc, ox, oy);
 
-                    // Измеряем текст
-                    SizeF sz = g.MeasureString(r.Label, f);
-                    float w = sz.Width;
-                    float h = sz.Height;
+                    // Размер надписи
+                    SizeF sz = g.MeasureString(r.Label, labelFont);
+                    float lw = sz.Width;
+                    float lh = sz.Height;
 
-                    // Прямоугольник по центру (StringFormat центрирует)
-                    RectangleF rect = new RectangleF(anchor.X - w / 2f, anchor.Y - h / 2f, w, h);
+                    // Режим 1: надпись помещается в bbox и не пересекается
+                    bool fitsW = lw <= 0.95f * boxW;
+                    bool fitsH = lh <= boxH;
+                    RectangleF plainRect = new RectangleF(anchor.X - lw / 2f, anchor.Y - lh / 2f, lw, lh);
 
-                    // Проверяем пересечение с уже нарисованными (с увеличением 1 px)
-                    if (!IntersectsAny(drawn, rect))
+                    if (fitsW && fitsH && !IntersectsAny(drawn, plainRect))
                     {
-                        g.DrawString(r.Label, f, br, anchor, sf);
-                        drawn.Add(rect);
+                        g.DrawString(r.Label, labelFont, labelBr, anchor, sf);
+                        drawn.Add(plainRect);
+                        continue;
                     }
-                    else
+
+                    // Режим 2: нумерованный бейдж
+                    badgeNum++;
+                    int n = badgeNum;
+                    float br = 8f; // радиус круга
+                    float badgeSize = 16f; // квадрат 16x16
+
+                    PointF badgePos = anchor;
+                    bool shifted = false;
+
+                    RectangleF badgeRect = new RectangleF(anchor.X - br, anchor.Y - br, badgeSize, badgeSize);
+                    if (IntersectsAny(drawn, badgeRect))
                     {
-                        // Пробы вертикального сдвига
-                        float[] offsets = new float[] { h, -h, 2f * h, -2f * h, 3f * h, -3f * h };
+                        // Попытки со сдвигом
+                        float[][] offsets = new float[][]
+                        {
+                            new float[] { -18f, 0f }, new float[] { 18f, 0f },
+                            new float[] { 0f, -18f }, new float[] { 0f, 18f },
+                            new float[] { -18f, -18f }, new float[] { 18f, -18f },
+                            new float[] { -18f, 18f }, new float[] { 18f, 18f },
+                            new float[] { -36f, 0f }, new float[] { 36f, 0f },
+                            new float[] { 0f, -36f }, new float[] { 0f, 36f }
+                        };
+
                         for (int i = 0; i < offsets.Length; i++)
                         {
-                            PointF shifted = new PointF(anchor.X, anchor.Y + offsets[i]);
-                            RectangleF tryRect = new RectangleF(shifted.X - w / 2f, shifted.Y - h / 2f, w, h);
+                            PointF tryPos = new PointF(anchor.X + offsets[i][0], anchor.Y + offsets[i][1]);
+                            RectangleF tryRect = new RectangleF(tryPos.X - br, tryPos.Y - br, badgeSize, badgeSize);
                             if (!IntersectsAny(drawn, tryRect))
                             {
-                                // Линия-указатель от якоря к смещённому центру
-                                g.DrawLine(leaderPen, anchor.X, anchor.Y, shifted.X, shifted.Y);
-                                g.DrawString(r.Label, f, br, shifted, sf);
-                                drawn.Add(tryRect);
+                                badgePos = tryPos;
+                                shifted = true;
                                 break;
                             }
                         }
-                        // Если ни одно место не подошло — пропускаем
+                        // Если ни одно не подошло — оставляем anchor (никогда не теряем)
+                    }
+
+                    // Линия-указатель
+                    if (shifted)
+                    {
+                        using (Pen leaderPen = new Pen(Color.FromArgb(60, 60, 60), 1f))
+                            g.DrawLine(leaderPen, anchor.X, anchor.Y, badgePos.X, badgePos.Y);
+                    }
+
+                    // Круг бейджа
+                    using (SolidBrush bg = new SolidBrush(Color.White))
+                    using (Pen outline = new Pen(Color.FromArgb(40, 40, 40), 1f))
+                    {
+                        g.FillEllipse(bg, badgePos.X - br, badgePos.Y - br, badgeSize, badgeSize);
+                        g.DrawEllipse(outline, badgePos.X - br, badgePos.Y - br, badgeSize, badgeSize);
+                    }
+
+                    // Номер в круге
+                    using (Font numFont = new Font("Segoe UI", 8f, FontStyle.Bold))
+                    using (SolidBrush numBr = new SolidBrush(Color.FromArgb(32, 32, 32)))
+                    {
+                        string numStr = n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        g.DrawString(numStr, numFont, numBr, badgePos, sf);
+                    }
+
+                    drawn.Add(new RectangleF(badgePos.X - br, badgePos.Y - br, badgeSize, badgeSize));
+                    badges.Add(new KeyValuePair<int, string>(n, r.Label));
+                }
+
+                // Легенда бейджей — верхний правый угол
+                if (badges.Count > 0)
+                {
+                    RectangleF clip = g.VisibleClipBounds;
+                    float bmpW = clip.Width;
+                    float bmpH = clip.Height;
+                    float maxLineW = bmpW * 0.45f;
+                    float pad = 4f;
+                    float lineH = 14f;
+
+                    using (Font legFont = new Font("Segoe UI", 8.5f))
+                    {
+                        // Измеряем максимальную ширину
+                        float maxTextW = 0;
+                        foreach (KeyValuePair<int, string> b in badges)
+                        {
+                            string line = b.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) + " \u2014 " + b.Value;
+                            float tw = g.MeasureString(line, legFont).Width;
+                            if (tw > maxTextW) maxTextW = tw;
+                        }
+                        if (maxTextW > maxLineW) maxTextW = maxLineW;
+
+                        float blockW = maxTextW + 2 * pad;
+                        float blockH = badges.Count * lineH + 2 * pad;
+
+                        // Позиция: правый верхний угол, 8 px от края
+                        float bx = bmpW - 8f - blockW;
+                        float by = 8f;
+
+                        // Не выходить за пределы
+                        if (bx < 0) bx = 0;
+                        if (by + blockH > bmpH) by = Math.Max(0, bmpH - blockH);
+
+                        // Фон
+                        using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(217, 255, 255, 255)))
+                        using (Pen bgPen = new Pen(Color.FromArgb(180, 120, 120, 120), 1f))
+                        {
+                            g.FillRectangle(bgBrush, bx, by, blockW, blockH);
+                            g.DrawRectangle(bgPen, bx, by, blockW, blockH);
+                        }
+
+                        // Строки легенды
+                        using (SolidBrush fgBrush = new SolidBrush(Color.FromArgb(32, 32, 32)))
+                        using (StringFormat legSf = new StringFormat
+                        {
+                            Alignment = StringAlignment.Near,
+                            LineAlignment = StringAlignment.Center,
+                            Trimming = StringTrimming.EllipsisCharacter,
+                            FormatFlags = StringFormatFlags.NoWrap
+                        })
+                        {
+                            for (int i = 0; i < badges.Count; i++)
+                            {
+                                string line = badges[i].Key.ToString(System.Globalization.CultureInfo.InvariantCulture) + " \u2014 " + badges[i].Value;
+                                float ly = by + pad + i * lineH;
+                                // Прямоугольник для обрезки
+                                float textW = Math.Min(maxTextW, maxLineW);
+                                RectangleF textRect = new RectangleF(bx + pad, ly, textW, lineH);
+                                g.DrawString(line, legFont, fgBrush, textRect, legSf);
+                            }
+                        }
                     }
                 }
             }

@@ -328,6 +328,77 @@ namespace Cad2Gdml.App
             RaiseViewChanged();
         }
 
+        // Клип треугольника по полупространству coord <= planePos (Sutherland-Hodgman)
+        // Возвращает 0, 1 или 2 треугольника в outTris (до 6 Vec3d)
+        private static int ClipTriangle(Vec3d a, Vec3d b, Vec3d c, int axis, double planePos, Vec3d[] outTris)
+        {
+            double ca = axis == 0 ? a.X : (axis == 1 ? a.Y : a.Z);
+            double cb = axis == 0 ? b.X : (axis == 1 ? b.Y : b.Z);
+            double cc = axis == 0 ? c.X : (axis == 1 ? c.Y : c.Z);
+
+            bool aIn = ca <= planePos;
+            bool bIn = cb <= planePos;
+            bool cIn = cc <= planePos;
+
+            Vec3d[] cv = new Vec3d[4];
+            int cn = 0;
+
+            // Ребро a->b
+            if (aIn && bIn) { cv[cn++] = b; }
+            else if (aIn && !bIn)
+            {
+                double t = (planePos - ca) / (cb - ca);
+                cv[cn++] = new Vec3d(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y), a.Z + t * (b.Z - a.Z));
+            }
+            else if (!aIn && bIn)
+            {
+                double t = (planePos - ca) / (cb - ca);
+                cv[cn++] = new Vec3d(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y), a.Z + t * (b.Z - a.Z));
+                cv[cn++] = b;
+            }
+
+            // Ребро b->c
+            if (bIn && cIn) { cv[cn++] = c; }
+            else if (bIn && !cIn)
+            {
+                double t = (planePos - cb) / (cc - cb);
+                cv[cn++] = new Vec3d(b.X + t * (c.X - b.X), b.Y + t * (c.Y - b.Y), b.Z + t * (c.Z - b.Z));
+            }
+            else if (!bIn && cIn)
+            {
+                double t = (planePos - cb) / (cc - cb);
+                cv[cn++] = new Vec3d(b.X + t * (c.X - b.X), b.Y + t * (c.Y - b.Y), b.Z + t * (c.Z - b.Z));
+                cv[cn++] = c;
+            }
+
+            // Ребро c->a
+            if (cIn && aIn) { cv[cn++] = a; }
+            else if (cIn && !aIn)
+            {
+                double t = (planePos - cc) / (ca - cc);
+                cv[cn++] = new Vec3d(c.X + t * (a.X - c.X), c.Y + t * (a.Y - c.Y), c.Z + t * (a.Z - c.Z));
+            }
+            else if (!cIn && aIn)
+            {
+                double t = (planePos - cc) / (ca - cc);
+                cv[cn++] = new Vec3d(c.X + t * (a.X - c.X), c.Y + t * (a.Y - c.Y), c.Z + t * (a.Z - c.Z));
+                cv[cn++] = a;
+            }
+
+            if (cn < 3) return 0;
+
+            if (cn == 3)
+            {
+                outTris[0] = cv[0]; outTris[1] = cv[1]; outTris[2] = cv[2];
+                return 1;
+            }
+
+            // 4 вершины: fan от cv[0]
+            outTris[0] = cv[0]; outTris[1] = cv[1]; outTris[2] = cv[2];
+            outTris[3] = cv[0]; outTris[4] = cv[2]; outTris[5] = cv[3];
+            return 2;
+        }
+
         // Основной отрисовщик
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -366,12 +437,13 @@ namespace Cad2Gdml.App
                 for (int pi = 0; pi < _parts.Count; pi++) totalTris += _partTris[pi].Length;
                 if (totalTris == 0) { DrawGizmo(g, w, h); return; }
 
-                // Массивы данных
-                float[] depths = new float[totalTris];
-                float[] triPts = new float[totalTris * 6];
-                float[] triNrm = new float[totalTris * 3];
-                int[] triPart = new int[totalTris];
-                bool[] triHi = new bool[totalTris];
+                // Массивы данных: каждый исходный треугольник может дать до 2 после клипа
+                int maxOut = totalTris * 2;
+                float[] depths = new float[maxOut];
+                float[] triPts = new float[maxOut * 6];
+                float[] triNrm = new float[maxOut * 3];
+                int[] triPart = new int[maxOut];
+                bool[] triHi = new bool[maxOut];
 
                 int total = 0;
 
@@ -391,60 +463,72 @@ namespace Cad2Gdml.App
                         Vec3d a, b, c;
                         mesh.GetTriangle(ti, out a, out b, out c);
 
-                        // Проверка сечения по центроиду
+                        // Клип или пропуск без клипа
+                        Vec3d[] triVerts = new Vec3d[6];
+                        int nTris = 1;
+
                         if (_sectionEnabled)
                         {
-                            double cxx = (a.X + b.X + c.X) / 3.0;
-                            double cyy2 = (a.Y + b.Y + c.Y) / 3.0;
-                            double czz = (a.Z + b.Z + c.Z) / 3.0;
-                            double coord = _sectionAxis == 0 ? cxx : (_sectionAxis == 1 ? cyy2 : czz);
-                            if (coord > planePos) continue;
-                        }
-
-                        // Вращение относительно центра
-                        double ax0 = a.X - _centre.X, ay0 = a.Y - _centre.Y, az0 = a.Z - _centre.Z;
-                        double bx0 = b.X - _centre.X, by0 = b.Y - _centre.Y, bz0 = b.Z - _centre.Z;
-                        double cx0 = c.X - _centre.X, cy0 = c.Y - _centre.Y, cz0 = c.Z - _centre.Z;
-
-                        double ax, ay, az, bx, by, bz, cxr, cyyr, czr;
-                        RotatePoint(ax0, ay0, az0, yawR, pitchR, out ax, out ay, out az);
-                        RotatePoint(bx0, by0, bz0, yawR, pitchR, out bx, out by, out bz);
-                        RotatePoint(cx0, cy0, cz0, yawR, pitchR, out cxr, out cyyr, out czr);
-
-                        // Экран
-                        int idx = total;
-                        triPts[idx * 6 + 0] = (float)(ax * scale + cx);
-                        triPts[idx * 6 + 1] = (float)(-az * scale + cyy);
-                        triPts[idx * 6 + 2] = (float)(bx * scale + cx);
-                        triPts[idx * 6 + 3] = (float)(-bz * scale + cyy);
-                        triPts[idx * 6 + 4] = (float)(cxr * scale + cx);
-                        triPts[idx * 6 + 5] = (float)(-czr * scale + cyy);
-
-                        depths[idx] = (float)((ay + by + cyyr) / 3.0);
-                        triPart[idx] = pi;
-                        triHi[idx] = hi;
-
-                        // Нормаль в пространстве вида
-                        double e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-                        double e2x = cxr - ax, e2y = cyyr - ay, e2z = czr - az;
-                        double nx = e1y * e2z - e1z * e2y;
-                        double ny = e1z * e2x - e1x * e2z;
-                        double nz = e1x * e2y - e1y * e2x;
-                        double nl = Math.Sqrt(nx * nx + ny * ny + nz * nz);
-                        if (nl > 1e-12)
-                        {
-                            triNrm[idx * 3 + 0] = (float)(nx / nl);
-                            triNrm[idx * 3 + 1] = (float)(ny / nl);
-                            triNrm[idx * 3 + 2] = (float)(nz / nl);
+                            nTris = ClipTriangle(a, b, c, _sectionAxis, planePos, triVerts);
+                            if (nTris == 0) continue;
                         }
                         else
                         {
-                            triNrm[idx * 3 + 0] = 0;
-                            triNrm[idx * 3 + 1] = 1;
-                            triNrm[idx * 3 + 2] = 0;
+                            triVerts[0] = a; triVerts[1] = b; triVerts[2] = c;
                         }
 
-                        total++;
+                        // Обработка 1 или 2 треугольников
+                        for (int tIdx = 0; tIdx < nTris; tIdx++)
+                        {
+                            Vec3d va = triVerts[tIdx * 3];
+                            Vec3d vb = triVerts[tIdx * 3 + 1];
+                            Vec3d vc = triVerts[tIdx * 3 + 2];
+
+                            // Вращение относительно центра
+                            double ax0 = va.X - _centre.X, ay0 = va.Y - _centre.Y, az0 = va.Z - _centre.Z;
+                            double bx0 = vb.X - _centre.X, by0 = vb.Y - _centre.Y, bz0 = vb.Z - _centre.Z;
+                            double cx0 = vc.X - _centre.X, cy0 = vc.Y - _centre.Y, cz0 = vc.Z - _centre.Z;
+
+                            double ax, ay, az, bx, by, bz, cxr, cyyr, czr;
+                            RotatePoint(ax0, ay0, az0, yawR, pitchR, out ax, out ay, out az);
+                            RotatePoint(bx0, by0, bz0, yawR, pitchR, out bx, out by, out bz);
+                            RotatePoint(cx0, cy0, cz0, yawR, pitchR, out cxr, out cyyr, out czr);
+
+                            // Экран
+                            int idx = total;
+                            triPts[idx * 6 + 0] = (float)(ax * scale + cx);
+                            triPts[idx * 6 + 1] = (float)(-az * scale + cyy);
+                            triPts[idx * 6 + 2] = (float)(bx * scale + cx);
+                            triPts[idx * 6 + 3] = (float)(-bz * scale + cyy);
+                            triPts[idx * 6 + 4] = (float)(cxr * scale + cx);
+                            triPts[idx * 6 + 5] = (float)(-czr * scale + cyy);
+
+                            depths[idx] = (float)((ay + by + cyyr) / 3.0);
+                            triPart[idx] = pi;
+                            triHi[idx] = hi;
+
+                            // Нормаль в пространстве вида
+                            double e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+                            double e2x = cxr - ax, e2y = cyyr - ay, e2z = czr - az;
+                            double nx = e1y * e2z - e1z * e2y;
+                            double ny = e1z * e2x - e1x * e2z;
+                            double nz = e1x * e2y - e1y * e2x;
+                            double nl = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+                            if (nl > 1e-12)
+                            {
+                                triNrm[idx * 3 + 0] = (float)(nx / nl);
+                                triNrm[idx * 3 + 1] = (float)(ny / nl);
+                                triNrm[idx * 3 + 2] = (float)(nz / nl);
+                            }
+                            else
+                            {
+                                triNrm[idx * 3 + 0] = 0;
+                                triNrm[idx * 3 + 1] = 1;
+                                triNrm[idx * 3 + 2] = 0;
+                            }
+
+                            total++;
+                        }
                     }
                 }
 

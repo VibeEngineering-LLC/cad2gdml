@@ -46,13 +46,22 @@ namespace Cad2Gdml.Import
                 python = null;
             if (python == null)
             {
-                string fb = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "ocpenv", "Scripts", "python.exe");
+                // Сначала bundled Python в tools\python
+                string fb = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "python", "python.exe");
                 if (File.Exists(fb))
+                {
                     python = fb;
-                else if (Directory.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "pylib")))
-                    python = FindPythonOnPath();
+                }
                 else
-                    python = null;
+                {
+                    fb = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "ocpenv", "Scripts", "python.exe");
+                    if (File.Exists(fb))
+                        python = fb;
+                    else if (Directory.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "pylib")))
+                        python = FindPythonOnPath();
+                    else
+                        python = null;
+                }
             }
 
             string script = Environment.GetEnvironmentVariable("CAD2GDML_STEP_SCRIPT");
@@ -70,7 +79,7 @@ namespace Cad2Gdml.Import
             if (python == null || script == null)
             {
                 errorCode = "E_STEP_NO_RUNTIME";
-                errorMessage = "Модуль STEP не найден. Нужен Python 3.12 (python.exe в PATH или переменная CAD2GDML_PYTHON).";
+                errorMessage = "Модуль STEP не найден. Положите папку tools из архива модуля STEP рядом с программой (в ней свой Python) либо задайте CAD2GDML_PYTHON (Python 3.12).";
                 return null;
             }
 
