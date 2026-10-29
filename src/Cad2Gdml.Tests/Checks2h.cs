@@ -16,6 +16,7 @@ namespace Cad2Gdml.Tests
             var list = new List<KeyValuePair<string, Action>>();
             list.Add(new KeyValuePair<string, Action>("holefiller_closes_box", HoleFillsClosesBox));
             list.Add(new KeyValuePair<string, Action>("holefiller_keeps_closed", HoleFillsKeepsClosed));
+            list.Add(new KeyValuePair<string, Action>("holefiller_pinch_no_fold", HoleFillerPinchNoFold));
             list.Add(new KeyValuePair<string, Action>("grouper_collapses", GrouperCollapses));
             list.Add(new KeyValuePair<string, Action>("material_names_roundtrip", MaterialNamesRoundtrip));
             list.Add(new KeyValuePair<string, Action>("material_rules_order", MaterialRulesOrder));
@@ -77,6 +78,45 @@ namespace Cad2Gdml.Tests
                 throw new Exception("holefiller_keeps_closed: filled=" + filled);
             if (fixedMesh != null && fixedMesh.TriangleCount != origCount)
                 throw new Exception("holefiller_keeps_closed: изменилось число треугольников");
+        }
+
+        // Шпилька: граница проходит через вершину 5 дважды — нет несогласованности
+        private static void HoleFillerPinchNoFold()
+        {
+            var mesh = new Mesh();
+            Vec3d v0 = new Vec3d(0, 0, 0);
+            Vec3d v1 = new Vec3d(1, 0, 0);
+            Vec3d v2 = new Vec3d(0, 1, 0);
+            Vec3d v3 = new Vec3d(-1, 0, 0);
+            Vec3d v4 = new Vec3d(0, 2, 0);
+            Vec3d v5 = new Vec3d(0, 0, 1);
+            mesh.Vertices.Add(v0);
+            mesh.Vertices.Add(v1);
+            mesh.Vertices.Add(v2);
+            mesh.Vertices.Add(v3);
+            mesh.Vertices.Add(v4);
+            mesh.Vertices.Add(v5);
+            // Треугольники (5,2,4), (0,1,5), (0,5,3)
+            mesh.Indices.Add(5); mesh.Indices.Add(2); mesh.Indices.Add(4);
+            mesh.Indices.Add(0); mesh.Indices.Add(1); mesh.Indices.Add(5);
+            mesh.Indices.Add(0); mesh.Indices.Add(5); mesh.Indices.Add(3);
+
+            int filled, skipped;
+            Mesh r = HoleFiller.Fill(mesh, 1000, out filled, out skipped);
+
+            if (r == null)
+            {
+                // Не заполнено — допустимо
+                if (filled != 0)
+                    throw new Exception("holefiller_pinch_no_fold: r=null, filled=" + filled);
+                return;
+            }
+
+            var rep = MeshTopology.Analyze(r);
+            if (rep.InconsistentEdges != 0)
+                throw new Exception("holefiller_pinch_no_fold: InconsistentEdges=" + rep.InconsistentEdges);
+            if (rep.NonManifoldEdges != 0)
+                throw new Exception("holefiller_pinch_no_fold: NonManifoldEdges=" + rep.NonManifoldEdges);
         }
 
         // DiagnosticGrouper: сворачивание и фильтрация Info

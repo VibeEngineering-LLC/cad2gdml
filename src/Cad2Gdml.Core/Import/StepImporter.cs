@@ -13,11 +13,11 @@ namespace Cad2Gdml.Import
     {
         // Предупреждения последнего запуска
         private static readonly object WarnLock = new object();
-        public static List<string> LastWarnings { get; }
+        private static readonly List<string> _warns = new List<string>();
 
-        static StepImporter()
+        public static List<string> LastWarnings
         {
-            LastWarnings = new List<string>();
+            get { lock (WarnLock) { return new List<string>(_warns); } }
         }
 
         // Загрузка STEP-файла: создаёт STL в temp, затем считывает их
@@ -29,7 +29,7 @@ namespace Cad2Gdml.Import
             // Очищаем предупреждения
             lock (WarnLock)
             {
-                LastWarnings.Clear();
+                _warns.Clear();
             }
 
             // (0) Проверка существования входного файла
@@ -121,115 +121,127 @@ namespace Cad2Gdml.Import
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
 
-                bool exited = proc.WaitForExit(300000);
-                if (!exited)
+                try
                 {
-                    try { proc.Kill(); }
-                    catch { }
-                    errorCode = "E_STEP_TIMEOUT";
-                    errorMessage = "Чтение STEP заняло больше 5 минут.";
-                    return null;
-                }
-
-                // (4) Ненулевой код выхода
-                if (proc.ExitCode != 0)
-                {
-                    string eCode = "E_STEP_INTERNAL";
-                    string eMsg = null;
-
-                    string outText = sbOut.ToString();
-                    string lastJson = null;
-                    string[] lines = outText.Split('\n');
-                    for (int i = lines.Length - 1; i >= 0; i--)
+                    bool exited = proc.WaitForExit(300000);
+                    if (!exited)
                     {
-                        string t = lines[i].Trim();
-                        if (t.Length > 0 && t[0] == '{')
+                        try { proc.Kill(); }
+                        catch { }
+                        try { proc.WaitForExit(5000); }
+                        catch { }
+                        errorCode = "E_STEP_TIMEOUT";
+                        errorMessage = "Чтение STEP заняло больше 5 минут.";
+                        return null;
+                    }
+
+                    // Дожидаемся доставки всех асинхронных строк
+                    proc.WaitForExit();
+
+                    // (4) Ненулевой код выхода
+                    if (proc.ExitCode != 0)
+                    {
+                        string eCode = "E_STEP_INTERNAL";
+                        string eMsg = null;
+
+                        string outText = sbOut.ToString();
+                        string lastJson = null;
+                        string[] lines = outText.Split('\n');
+                        for (int i = lines.Length - 1; i >= 0; i--)
                         {
-                            lastJson = t;
-                            break;
+                            string t = lines[i].Trim();
+                            if (t.Length > 0 && t[0] == '{')
+                            {
+                                lastJson = t;
+                                break;
+                            }
                         }
+
+                        if (lastJson != null)
+                        {
+                            Match mCode = Regex.Match(lastJson, "\"error\"\\s*:\\s*\"([A-Za-z0-9_]+)\"");
+                            if (mCode.Success)
+                                eCode = mCode.Groups[1].Value;
+
+                            Match mMsg = Regex.Match(lastJson, "\"message\"\\s*:\\s*\"([^\"]*)\"");
+                            if (mMsg.Success)
+                                eMsg = mMsg.Groups[1].Value;
+                        }
+
+                        // Декодирование unicode-эскейпов в сообщении
+                        if (eMsg != null)
+                        {
+                            try { eMsg = Regex.Unescape(eMsg); }
+                            catch { /* оставляем как есть */ }
+                        }
+
+                        if (eMsg == null)
+                        {
+                            string errText = sbErr.ToString();
+                            eMsg = errText.Length > 300 ? errText.Substring(errText.Length - 300) : errText;
+                        }
+
+                        // Собираем строки с "skipped"
+                        AddSkippedWarnings(sbOut.ToString(), sbErr.ToString());
+
+                        errorCode = eCode;
+                        errorMessage = "STEP: " + eMsg;
+                        return null;
                     }
 
-                    if (lastJson != null)
-                    {
-                        Match mCode = Regex.Match(lastJson, "\"error\"\\s*:\\s*\"([A-Za-z0-9_]+)\"");
-                        if (mCode.Success)
-                            eCode = mCode.Groups[1].Value;
-
-                        Match mMsg = Regex.Match(lastJson, "\"message\"\\s*:\\s*\"([^\"]*)\"");
-                        if (mMsg.Success)
-                            eMsg = mMsg.Groups[1].Value;
-                    }
-
-                    // Декодирование unicode-эскейпов в сообщении
-                    if (eMsg != null)
-                    {
-                        try { eMsg = Regex.Unescape(eMsg); }
-                        catch { /* оставляем как есть */ }
-                    }
-
-                    if (eMsg == null)
-                    {
-                        string errText = sbErr.ToString();
-                        eMsg = errText.Length > 300 ? errText.Substring(errText.Length - 300) : errText;
-                    }
-
-                    // Собираем строки с "skipped"
+                    // Собираем строки с "skipped" из stdout/stderr
                     AddSkippedWarnings(sbOut.ToString(), sbErr.ToString());
 
-                    errorCode = eCode;
-                    errorMessage = "STEP: " + eMsg;
-                    return null;
-                }
+                    // (5) Загрузка STL из temp
+                    string[] files = Directory.GetFiles(tempDir, "*.stl");
+                    Array.Sort(files, StringComparer.Ordinal);
 
-                // Собираем строки с "skipped" из stdout/stderr
-                AddSkippedWarnings(sbOut.ToString(), sbErr.ToString());
-
-                // (5) Загрузка STL из temp
-                string[] files = Directory.GetFiles(tempDir, "*.stl");
-                Array.Sort(files, StringComparer.Ordinal);
-
-                List<Part> parts = new List<Part>();
-                for (int i = 0; i < files.Length; i++)
-                {
-                    Part p = null;
-                    bool failed = false;
-                    try
+                    List<Part> parts = new List<Part>();
+                    for (int i = 0; i < files.Length; i++)
                     {
-                        p = StlImporter.Load(files[i], 1.0);
-                    }
-                    catch
-                    {
-                        failed = true;
-                    }
-
-                    if (failed || p == null)
-                    {
-                        // Фиксируем предупреждение
-                        string warnName = Path.GetFileNameWithoutExtension(files[i]);
-                        lock (WarnLock)
+                        Part p = null;
+                        bool failed = false;
+                        try
                         {
-                            LastWarnings.Add("STEP: не удалось прочитать деталь " + warnName);
+                            p = StlImporter.Load(files[i], 1.0);
                         }
-                        continue;
+                        catch
+                        {
+                            failed = true;
+                        }
+
+                        if (failed || p == null)
+                        {
+                            // Фиксируем предупреждение
+                            string warnName = Path.GetFileNameWithoutExtension(files[i]);
+                            lock (WarnLock)
+                            {
+                                _warns.Add("STEP: не удалось прочитать деталь " + warnName);
+                            }
+                            continue;
+                        }
+
+                        // Убираем префикс NNN_ из имени
+                        string fn = Path.GetFileNameWithoutExtension(files[i]);
+                        fn = Regex.Replace(fn, "^\\d+_", "");
+                        p.Name = fn;
+                        p.SourceFile = stepPath;
+                        parts.Add(p);
                     }
 
-                    // Убираем префикс NNN_ из имени
-                    string fn = Path.GetFileNameWithoutExtension(files[i]);
-                    fn = Regex.Replace(fn, "^\\d+_", "");
-                    p.Name = fn;
-                    p.SourceFile = stepPath;
-                    parts.Add(p);
-                }
+                    if (parts.Count == 0)
+                    {
+                        errorCode = "E_STEP_EMPTY";
+                        errorMessage = "В STEP не найдено тел.";
+                        return null;
+                    }
 
-                if (parts.Count == 0)
+                    return parts;
+                }
+                finally
                 {
-                    errorCode = "E_STEP_EMPTY";
-                    errorMessage = "В STEP не найдено тел.";
-                    return null;
+                    proc.Dispose();
                 }
-
-                return parts;
             }
             finally
             {
@@ -239,7 +251,7 @@ namespace Cad2Gdml.Import
             }
         }
 
-        // Добавляет строки, содержащие "skipped" (не более 5), в LastWarnings
+        // Добавляет строки, содержащие "skipped" (не более 5), в список
         private static void AddSkippedWarnings(string outText, string errText)
         {
             int added = 0;
@@ -251,7 +263,7 @@ namespace Cad2Gdml.Import
                 {
                     lock (WarnLock)
                     {
-                        LastWarnings.Add("STEP: " + line);
+                        _warns.Add("STEP: " + line);
                     }
                     added++;
                 }
@@ -266,7 +278,7 @@ namespace Cad2Gdml.Import
                     {
                         lock (WarnLock)
                         {
-                            LastWarnings.Add("STEP: " + line);
+                            _warns.Add("STEP: " + line);
                         }
                         added++;
                     }

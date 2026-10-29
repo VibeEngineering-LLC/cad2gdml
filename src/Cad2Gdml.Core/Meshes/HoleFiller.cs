@@ -93,6 +93,7 @@ namespace Cad2Gdml.Meshes
             // Поиск циклов среди граничных рёбер
             bool[] used = new bool[nE];
             List<List<int>> rawLoops = new List<List<int>>();
+            int skippedCnt = 0;
 
             for (int oi = 0; oi < nE; oi++)
             {
@@ -168,7 +169,8 @@ namespace Cad2Gdml.Meshes
 
                 if (!closed || !valid)
                 {
-                    // Не удалось замкнуть — пропускаем
+                    // Не удалось замкнуть — не контур, считаем как пропущенный
+                    skippedCnt++;
                     continue;
                 }
 
@@ -179,29 +181,21 @@ namespace Cad2Gdml.Meshes
                 }
                 else
                 {
-                    // Разбиение на два подконтoura в точке повтора
-                    int len1 = repeatPos + 1;
+                    // Цикл: verts[repeatPos..end] — единственная замкнутая часть
                     int len2 = verts.Count - repeatPos;
-
-                    if (len1 >= 3)
-                    {
-                        List<int> l1 = new List<int>(len1);
-                        for (int i = 0; i <= repeatPos; i++) l1.Add(verts[i]);
-                        rawLoops.Add(l1);
-                    }
                     if (len2 >= 3)
                     {
                         List<int> l2 = new List<int>(len2);
                         for (int i = repeatPos; i < verts.Count; i++) l2.Add(verts[i]);
                         rawLoops.Add(l2);
                     }
+                    // Префикс verts[0..repeatPos] — открытый хвост, не контур, не добавляем
                 }
             }
 
             // Проверка выпуклости и формирование валидных крышек
             List<List<int>> caps = new List<List<int>>();
             int filledCnt = 0;
-            int skippedCnt = 0;
 
             for (int ci = 0; ci < rawLoops.Count; ci++)
             {

@@ -196,6 +196,12 @@ namespace Cad2Gdml.App
             var dupSeen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             if (_scene != null)
             {
+                foreach (Part q in _scene.Parts)
+                {
+                    int c;
+                    dupSeen.TryGetValue(q.Name, out c);
+                    dupSeen[q.Name] = c + 1;
+                }
                 foreach (Part p in _scene.Parts)
                 {
                     sceneNames.Add(p.Name);
@@ -206,10 +212,9 @@ namespace Cad2Gdml.App
                     _rowNames.Add(p.Name);
                     _autoMats.Add(matRu);
                     _isScenePart.Add(true);
-                    int seen;
-                    dupSeen.TryGetValue(p.Name, out seen);
-                    dupSeen[p.Name] = seen + 1;
-                    string shown = seen == 0 ? p.Name : p.Name + " (" + (seen + 1) + ")";
+                    int total;
+                    dupSeen.TryGetValue(p.Name, out total);
+                    string shown = total > 1 ? p.Name + " [одноимённых: " + total + "; действие для всех]" : p.Name;
                     _grid.Rows.Add(true, shown, RoleToRu(p.Role), matRu);
                 }
             }
