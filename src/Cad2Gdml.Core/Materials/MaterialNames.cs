@@ -13,7 +13,8 @@ namespace Cad2Gdml.Materials
             "G4_W", "G4_Ti", "G4_Ni", "G4_Au", "G4_Ag", "G4_Ge",
             "G4_C", "G4_POLYETHYLENE", "G4_PLEXIGLASS", "G4_TEFLON",
             "G4_POLYSTYRENE", "G4_KAPTON", "G4_MYLAR", "G4_CONCRETE",
-            "NaI", "NaI_Tl", "CsI", "LaBr3"
+            "NaI", "NaI_Tl", "CsI", "LaBr3",
+            "G4_POLYCARBONATE", "G4_RUBBER_NEOPRENE", "FR4", "LaBr3_Ce"
         };
 
         private static readonly List<string> _ru = new List<string>
@@ -23,7 +24,8 @@ namespace Cad2Gdml.Materials
             "Вольфрам", "Титан", "Никель", "Золото", "Серебро", "Германий",
             "Углерод (графит)", "Полиэтилен", "Оргстекло", "Фторопласт (тефлон)",
             "Полистирол", "Каптон", "Майлар", "Бетон",
-            "Иодид натрия NaI", "Иодид натрия NaI(Tl)", "Иодид цезия CsI", "Бромид лантана LaBr3"
+            "Иодид натрия NaI", "Иодид натрия NaI(Tl)", "Иодид цезия CsI", "Бромид лантана LaBr3",
+            "Поликарбонат", "Резина (неопрен)", "Стеклотекстолит FR4", "Бромид лантана LaBr3(Ce)"
         };
 
         private static readonly Dictionary<string, string> _idToRu;

@@ -142,6 +142,18 @@ namespace Cad2Gdml.Scene
         {
             axis = Vec3d.Zero;
 
+            // Явная ось ±x / ±y — сразу возвращаем единичный вектор
+            Vec3d signAxis;
+            char signLetter;
+            if (AxisFromSign(opt.FrontSign, out signAxis, out signLetter))
+            {
+                if (signLetter == 'x' || signLetter == 'y')
+                {
+                    axis = signAxis;
+                    return true;
+                }
+            }
+
             if (crystal.Mesh == null || crystal.Mesh.Vertices.Count < 3)
             {
                 scene.Add("E_AXIS_AMBIG", DiagSeverity.Error, crystal.Name,
@@ -207,10 +219,12 @@ namespace Cad2Gdml.Scene
             axis = Vec3d.Zero;
             string sign = (opt.FrontSign ?? "auto").Trim();
 
-            // Явная FrontSign → file z
-            if (sign == "+z" || sign == "-z")
+            // Явная ось (±x/±y/±z)
+            Vec3d ax;
+            char ch;
+            if (AxisFromSign(sign, out ax, out ch))
             {
-                axis = new Vec3d(0, 0, 1);
+                axis = ax;
                 return true;
             }
 
@@ -274,10 +288,11 @@ namespace Cad2Gdml.Scene
             {
                 // Несколько рёбер близки к самому длинному
                 string sign = (opt.FrontSign ?? "auto").Trim();
-                if (sign == "+z" || sign == "-z")
+                Vec3d ax;
+                char ch;
+                if (AxisFromSign(sign, out ax, out ch))
                 {
-                    // Явная FrontSign — используем file z
-                    axis = new Vec3d(0, 0, 1);
+                    axis = ax;
                     return true;
                 }
                 scene.Add("E_AXIS_AMBIG", DiagSeverity.Error, name,
@@ -306,29 +321,36 @@ namespace Cad2Gdml.Scene
             front = Vec3d.Zero;
             string sign = (opt.FrontSign ?? "auto").Trim();
 
-            if (sign == "+z" || sign == "-z")
+            // Явная ось ±x/±y/±z
+            Vec3d axSign;
+            char letter;
+            if (AxisFromSign(sign, out axSign, out letter))
             {
                 Vec3d d = (facePlus - faceMinus).Normalized();
-                bool wantPlus = (sign == "+z");
+                bool wantPlus = (sign.Length > 0 && sign[0] == '+');
 
-                if (Math.Abs(d.Z) >= 1e-9)
+                // Компонента d вдоль заданной оси
+                double comp;
+                if (letter == 'x') { comp = d.X; }
+                else if (letter == 'y') { comp = d.Y; }
+                else { comp = d.Z; }
+
+                if (Math.Abs(comp) >= 1e-9)
                 {
-                    bool plusIsFront = (d.Z > 0.0);
+                    bool plusIsFront = (comp > 0.0);
                     front = (plusIsFront == wantPlus) ? facePlus : faceMinus;
                 }
                 else
                 {
-                    double ax = Math.Abs(d.X);
-                    double ay = Math.Abs(d.Y);
+                    // Вырождение — доминирующая из двух других компонент
+                    double c1, c2;
+                    if (letter == 'x') { c1 = d.Y; c2 = d.Z; }
+                    else if (letter == 'y') { c1 = d.X; c2 = d.Z; }
+                    else { c1 = d.X; c2 = d.Y; }
+
                     double domVal;
-                    if (ax >= ay)
-                    {
-                        domVal = d.X;
-                    }
-                    else
-                    {
-                        domVal = d.Y;
-                    }
+                    if (Math.Abs(c1) >= Math.Abs(c2)) { domVal = c1; }
+                    else { domVal = c2; }
 
                     bool domPositive = (domVal > 0.0);
                     front = (domPositive == wantPlus) ? facePlus : faceMinus;
@@ -386,6 +408,18 @@ namespace Cad2Gdml.Scene
             if (!any) { return false; }
             com = new Vec3d(sx / totalMass, sy / totalMass, sz / totalMass);
             return true;
+        }
+
+        // Разбор явной оси из FrontSign: "+x","-x","+y","-y","+z","-z"
+        private static bool AxisFromSign(string sign, out Vec3d axis, out char letter)
+        {
+            axis = Vec3d.Zero;
+            letter = '\0';
+            string s = (sign ?? "").Trim().ToLowerInvariant();
+            if (s == "+x" || s == "-x") { axis = Vec3d.UnitX; letter = 'x'; return true; }
+            if (s == "+y" || s == "-y") { axis = Vec3d.UnitY; letter = 'y'; return true; }
+            if (s == "+z" || s == "-z") { axis = new Vec3d(0.0, 0.0, 1.0); letter = 'z'; return true; }
+            return false;
         }
     }
 }

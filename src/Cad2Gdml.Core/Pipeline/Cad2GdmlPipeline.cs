@@ -37,6 +37,7 @@ namespace Cad2Gdml.Pipeline
         public bool NoRepair;
         public List<string> ExcludeParts;
         public List<KeyValuePair<string, string>> RoleOverrides;
+        public List<KeyValuePair<string, double>> DensityOverrides;
     }
 
     // Результат конвейера
@@ -214,6 +215,34 @@ namespace Cad2Gdml.Pipeline
                         for (int wi = 0; wi < StepImporter.LastWarnings.Count; wi++)
                         {
                             scene.Add("W_STEP_NOTE", DiagSeverity.Warning, input, StepImporter.LastWarnings[wi]);
+                        }
+                    }
+                    AddParts(scene, parts, input);
+                }
+                else if (ext == ".blend")
+                {
+                    List<Part> parts;
+                    string code = null, msg = null;
+                    try
+                    {
+                        parts = BlendImporter.Load(input, out code, out msg);
+                    }
+                    catch (Exception ex)
+                    {
+                        scene.Add("E_BLEND_INTERNAL", DiagSeverity.Error, input, ex.Message);
+                        return false;
+                    }
+                    if (parts == null)
+                    {
+                        scene.Add(code, DiagSeverity.Error, input, msg);
+                        return false;
+                    }
+                    // предупреждения Blender
+                    if (BlendImporter.LastWarnings != null)
+                    {
+                        for (int wi = 0; wi < BlendImporter.LastWarnings.Count; wi++)
+                        {
+                            scene.Add("W_BLEND_NOTE", DiagSeverity.Warning, input, BlendImporter.LastWarnings[wi]);
                         }
                     }
                     AddParts(scene, parts, input);
@@ -991,6 +1020,69 @@ namespace Cad2Gdml.Pipeline
                 return false;
             }
 
+            // Плотности вручную
+            if (!ApplyDensities(o, lib, scene, true)) return false;
+
+            return true;
+        }
+
+        // Применение ручных плотностей: создаёт производные вещества и подменяет p.Material
+        private static bool ApplyDensities(PipelineOptions o, MaterialLibrary lib, SceneModel scene, bool report)
+        {
+            if (o.DensityOverrides == null || o.DensityOverrides.Count == 0) return true;
+
+            for (int di = 0; di < o.DensityOverrides.Count; di++)
+            {
+                string id = o.DensityOverrides[di].Key;
+                double rho = o.DensityOverrides[di].Value;
+
+                if (lib.Find(id) == null)
+                {
+                    if (report)
+                    {
+                        scene.Add("E_MAT_UNKNOWN", DiagSeverity.Error, "", "Вещество не найдено: " + id + ".");
+                        return false;
+                    }
+                    continue;
+                }
+
+                string derived = lib.WithDensity(id, rho);
+                if (derived == null)
+                {
+                    if (report)
+                    {
+                        scene.Add("W_DENSITY_BAD", DiagSeverity.Warning, "",
+                            "Плотность для " + id + " не применена: значение " + rho.ToString("0.####", CultureInfo.InvariantCulture));
+                    }
+                    continue;
+                }
+
+                int count = 0;
+                for (int pi = 0; pi < scene.Parts.Count; pi++)
+                {
+                    Part p = scene.Parts[pi];
+                    if (p.Material != null && p.Material.Equals(id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        p.Material = derived;
+                        count++;
+                    }
+                }
+
+                if (report)
+                {
+                    if (count > 0)
+                    {
+                        scene.Add("I_MAT_DENSITY", DiagSeverity.Info, "",
+                            "Плотность " + id + " задана вручную: " + rho.ToString("0.####", CultureInfo.InvariantCulture) + " г/см³ (деталей: " + count.ToString(CultureInfo.InvariantCulture) + ") → " + derived);
+                    }
+                    else
+                    {
+                        scene.Add("W_DENSITY_UNUSED", DiagSeverity.Warning, "",
+                            "Плотность задана для вещества без деталей: " + id);
+                    }
+                }
+            }
+
             return true;
         }
 
@@ -1021,6 +1113,7 @@ namespace Cad2Gdml.Pipeline
 
             string mp = EffectiveMaterialsPath(o);
             MaterialLibrary lib = (mp != null) ? MaterialLibrary.LoadJson(mp) : MaterialLibrary.Default();
+            ApplyDensities(o, lib, scene, false);
 
             var sketch = SketchBuilder.Build(scene);
             Bitmap pngBitmap = GdiSketchRenderer.Render(sketch, 1200, 800);
@@ -1194,7 +1287,7 @@ namespace Cad2Gdml.Pipeline
         {
             if (code == null) return 9;
             if (code.StartsWith("E_FORMAT") || code.StartsWith("E_UNIT_MISSING")
-                || code.StartsWith("E_STEP"))
+                || code.StartsWith("E_STEP") || code.StartsWith("E_BLEND"))
                 return 2;
             if (code.StartsWith("E_MESH") || code.StartsWith("E_SCENE"))
                 return 3;

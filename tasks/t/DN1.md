@@ -1,0 +1,6 @@
+TARGET: src/Cad2Gdml.Core/Materials/MaterialLibrary.cs
+DEPENDS: src/Cad2Gdml.Core/Materials/MaterialLibrary.cs
+
+EXTEND the existing file (return the COMPLETE file, keep everything else byte-for-byte). Add to class `MaterialLibrary` one public method:
+
+`public string WithDensity(string id, double densityGcm3)` — returns the name of a material with the same composition as `id` but density `densityGcm3`, registering it in `Materials` if needed. Rules: `MaterialDef def = Find(id)`; if `def == null` return null; if `densityGcm3 <= 0.0 || double.IsNaN(densityGcm3) || double.IsInfinity(densityGcm3)` return null; if `Math.Abs(def.DensityGcm3 - densityGcm3) < 1e-9` return `def.Name` (no new material). Otherwise `string baseName = def.Name.StartsWith("G4_", StringComparison.Ordinal) ? def.Name.Substring(3) : def.Name;` `string derived = baseName + "_rho" + densityGcm3.ToString("0.####", CultureInfo.InvariantCulture);` and `Materials[derived] = new MaterialDef { Name = derived, DensityGcm3 = densityGcm3, MassFractions = new List<KeyValuePair<string, double>>(def.MassFractions), IsNist = false };` return `derived`. The derived name must never start with "G4_" (the writer treats such names as NIST references). C# 7.3, no new usings needed beyond existing. Keep it compact; think briefly.

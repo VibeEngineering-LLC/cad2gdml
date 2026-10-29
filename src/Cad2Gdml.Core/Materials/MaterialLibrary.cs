@@ -143,6 +143,27 @@ namespace Cad2Gdml.Materials
             return null;
         }
 
+        // Возвращает имя вещества с тем же составом, но другой плотностью
+        public string WithDensity(string id, double densityGcm3)
+        {
+            MaterialDef def = Find(id);
+            if (def == null) return null;
+            if (densityGcm3 <= 0.0 || double.IsNaN(densityGcm3) || double.IsInfinity(densityGcm3))
+                return null;
+            if (Math.Abs(def.DensityGcm3 - densityGcm3) < 1e-9)
+                return def.Name;
+            string baseName = def.Name.StartsWith("G4_", StringComparison.Ordinal) ? def.Name.Substring(3) : def.Name;
+            string derived = baseName + "_rho" + densityGcm3.ToString("0.####", CultureInfo.InvariantCulture);
+            Materials[derived] = new MaterialDef
+            {
+                Name = derived,
+                DensityGcm3 = densityGcm3,
+                MassFractions = new List<KeyValuePair<string, double>>(def.MassFractions),
+                IsNist = false
+            };
+            return derived;
+        }
+
         // Назначение: первое совпавшее правило -> имя вещества
         public string Resolve(string partName)
         {

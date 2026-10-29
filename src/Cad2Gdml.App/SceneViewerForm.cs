@@ -20,6 +20,8 @@ namespace Cad2Gdml.App
         private readonly List<string> _rowNames;
         private readonly List<bool> _isScenePart;
         private readonly List<string> _initialExcluded;
+        private readonly List<string> _autoDens;
+        private readonly MaterialLibrary _lib;
         private double _bmnX, _bmnY, _bmnZ, _bmxX, _bmxY, _bmxZ;
         private bool _suppressEvents;
 
@@ -33,6 +35,8 @@ namespace Cad2Gdml.App
         public List<KeyValuePair<string, string>> Overrides { get; }
         // Перекрывания ролей (заполняется при ОК)
         public List<KeyValuePair<string, string>> RoleOverrides { get; }
+        // Перекрывания плотностей (заполняется при ОК)
+        public List<KeyValuePair<string, double>> DensityOverrides { get; }
         // Имена исключаемых строк (заполняется при ОК)
         public List<string> Excluded { get; }
         // Изменился ли набор исключений по сравнению с начальным
@@ -43,11 +47,14 @@ namespace Cad2Gdml.App
         public SceneViewerForm(SceneModel scene, IEnumerable<string> excludedNames)
         {
             _scene = scene;
+            _lib = MaterialLibrary.Default();
             Overrides = new List<KeyValuePair<string, string>>();
             RoleOverrides = new List<KeyValuePair<string, string>>();
+            DensityOverrides = new List<KeyValuePair<string, double>>();
             Excluded = new List<string>();
             _autoMats = new List<string>();
             _autoRoles = new List<string>();
+            _autoDens = new List<string>();
             _rowNames = new List<string>();
             _isScenePart = new List<bool>();
             _initialExcluded = excludedNames != null ? new List<string>(excludedNames) : new List<string>();
@@ -75,6 +82,72 @@ namespace Cad2Gdml.App
 
             // Начальное состояние скрытых
             UpdateHiddenFromGrid();
+        }
+
+        // Плотность по id из библиотеки; пустая строка если не найдено
+        private static string DensityText(MaterialLibrary lib, string id)
+        {
+            if (string.IsNullOrEmpty(id)) return "";
+            MaterialDef md = lib.Find(id);
+            if (md == null) return "";
+            return md.DensityGcm3.ToString("0.####", CultureInfo.InvariantCulture);
+        }
+
+        // Разделение производного имени (id_rho1.23) на базу и плотность
+        private static void SplitDerived(MaterialLibrary lib, string id, out string baseId, out string rhoText)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                baseId = id;
+                rhoText = "";
+                return;
+            }
+            int pos = id.LastIndexOf("_rho", StringComparison.Ordinal);
+            if (pos > 0)
+            {
+                string b = id.Substring(0, pos);
+                string r = id.Substring(pos + 4);
+                if (lib.Find(b) != null)
+                {
+                    baseId = b;
+                    rhoText = r;
+                }
+                else if (lib.Find("G4_" + b) != null)
+                {
+                    baseId = "G4_" + b;
+                    rhoText = r;
+                }
+                else
+                {
+                    baseId = id;
+                    rhoText = DensityText(lib, id);
+                }
+            }
+            else
+            {
+                baseId = id;
+                rhoText = DensityText(lib, id);
+            }
+        }
+
+        // Установка начальных плотностей извне (вызывается до ShowDialog)
+        public void SetInitialDensities(List<KeyValuePair<string, double>> dens)
+        {
+            if (dens == null) return;
+            for (int i = 0; i < _grid.Rows.Count; i++)
+            {
+                if (!_isScenePart[i]) continue;
+                string matText = _grid.Rows[i].Cells[3].Value as string;
+                string id = MaterialNames.ToId(matText);
+                foreach (KeyValuePair<string, double> kv in dens)
+                {
+                    if (string.Equals(kv.Key, id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _grid.Rows[i].Cells[4].Value = kv.Value.ToString("0.####", CultureInfo.InvariantCulture);
+                        break;
+                    }
+                }
+            }
         }
 
         // Вычисление габаритов сцены
@@ -172,7 +245,7 @@ namespace Cad2Gdml.App
                 ReadOnly = true
             };
 
-            // Колонка "Роль" — combo с автодополнением
+            // Колонка "Роль"
             var colRole = new DataGridViewComboBoxColumn
             {
                 HeaderText = "Роль",
@@ -188,6 +261,14 @@ namespace Cad2Gdml.App
                 FlatStyle = FlatStyle.Flat
             };
 
+            // Колонка "Плотность, г/см³"
+            var colDens = new DataGridViewTextBoxColumn
+            {
+                HeaderText = "Плотность, г/см³",
+                FillWeight = 15,
+                ReadOnly = false
+            };
+
             // Заполнение Items
             var items = MaterialNames.RuLabels(MaterialLibrary.Default().Materials.Keys);
             foreach (string item in items)
@@ -197,6 +278,7 @@ namespace Cad2Gdml.App
             _grid.Columns.Add(colName);
             _grid.Columns.Add(colRole);
             _grid.Columns.Add(colMat);
+            _grid.Columns.Add(colDens);
 
             _suppressEvents = true;
 
@@ -214,7 +296,12 @@ namespace Cad2Gdml.App
                 foreach (Part p in _scene.Parts)
                 {
                     sceneNames.Add(p.Name);
-                    string matRu = MaterialNames.ToRu(p.Material);
+
+                    // Разделение производного имени
+                    string baseId, rhoText;
+                    SplitDerived(_lib, p.Material, out baseId, out rhoText);
+
+                    string matRu = MaterialNames.ToRu(baseId);
                     if (!colMat.Items.Contains(matRu))
                         colMat.Items.Add(matRu);
 
@@ -223,11 +310,12 @@ namespace Cad2Gdml.App
                     _rowNames.Add(p.Name);
                     _autoMats.Add(matRu);
                     _autoRoles.Add(roleRu);
+                    _autoDens.Add(DensityText(_lib, baseId));
                     _isScenePart.Add(true);
                     int total;
                     dupSeen.TryGetValue(p.Name, out total);
                     string shown = total > 1 ? p.Name + " [одноимённых: " + total + "; действие для всех]" : p.Name;
-                    _grid.Rows.Add(true, shown, roleRu, matRu);
+                    _grid.Rows.Add(true, shown, roleRu, matRu, rhoText);
                 }
             }
 
@@ -240,10 +328,12 @@ namespace Cad2Gdml.App
                     _rowNames.Add(name);
                     _autoMats.Add("");
                     _autoRoles.Add("—");
+                    _autoDens.Add("");
                     _isScenePart.Add(false);
-                    int rowIdx = _grid.Rows.Add(false, name, "—", "");
+                    int rowIdx = _grid.Rows.Add(false, name, "—", "", "");
                     _grid.Rows[rowIdx].Cells[2].ReadOnly = true;
                     _grid.Rows[rowIdx].Cells[3].ReadOnly = true;
+                    _grid.Rows[rowIdx].Cells[4].ReadOnly = true;
                     // Серый цвет для невыбранных
                     for (int c = 0; c < _grid.Rows[rowIdx].Cells.Count; c++)
                         _grid.Rows[rowIdx].Cells[c].Style.ForeColor = Color.Gray;
@@ -361,12 +451,29 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Реакция на переключение чекбокса
+        // Реакция на изменение ячейки
         private void OnCellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
             if (_suppressEvents) return;
-            if (e.ColumnIndex != 0) return;
             if (e.RowIndex < 0 || e.RowIndex >= _grid.Rows.Count) return;
+
+            // Изменение вещества — обновляем плотность по умолчанию
+            if (e.ColumnIndex == 3)
+            {
+                if (_isScenePart[e.RowIndex])
+                {
+                    string newMat = _grid.Rows[e.RowIndex].Cells[3].Value as string;
+                    if (newMat != null)
+                    {
+                        string matId = MaterialNames.ToId(newMat);
+                        _grid.Rows[e.RowIndex].Cells[4].Value = DensityText(_lib, matId);
+                    }
+                }
+                return;
+            }
+
+            // Чекбокс "В сцене"
+            if (e.ColumnIndex != 0) return;
 
             bool isChecked = (bool)_grid.Rows[e.RowIndex].Cells[0].Value;
             Color fc = isChecked ? Color.Black : Color.Gray;
@@ -425,7 +532,7 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Сброс значений веществ и ролей
+        // Сброс значений веществ, ролей и плотностей
         private void OnReset(object sender, EventArgs e)
         {
             _suppressEvents = true;
@@ -434,18 +541,21 @@ namespace Cad2Gdml.App
                 if (!_isScenePart[i]) continue;
                 _grid.Rows[i].Cells[2].Value = _autoRoles[i];
                 _grid.Rows[i].Cells[3].Value = _autoMats[i];
+                _grid.Rows[i].Cells[4].Value = _autoDens[i];
             }
             _suppressEvents = false;
         }
 
-        // Применение перекрываний и исключений
+        // Применение перекрываний, исключений и плотностей
         private void OnApply(object sender, EventArgs e)
         {
             Excluded.Clear();
             Overrides.Clear();
             RoleOverrides.Clear();
+            DensityOverrides.Clear();
 
             var excludedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var densDict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
             for (int i = 0; i < _grid.Rows.Count; i++)
             {
@@ -456,27 +566,45 @@ namespace Cad2Gdml.App
                 {
                     Excluded.Add(_rowNames[i]);
                     excludedSet.Add(_rowNames[i]);
+                    continue;
                 }
-                else
+
+                // Только детали сцены участвуют в overrides
+                if (!_isScenePart[i]) continue;
+
+                // Перекрывание вещества
+                string cur = _grid.Rows[i].Cells[3].Value as string;
+                if (!string.IsNullOrEmpty(cur) && cur != _autoMats[i])
+                    Overrides.Add(new KeyValuePair<string, string>("=" + _rowNames[i], MaterialNames.ToId(cur)));
+
+                // Перекрывание роли
+                string roleText = _grid.Rows[i].Cells[2].Value as string;
+                if (!string.IsNullOrEmpty(roleText) && roleText != _autoRoles[i])
                 {
-                    // Только детали сцены участвуют в overrides
-                    if (!_isScenePart[i]) continue;
+                    string roleEng = RuToRoleName(roleText);
+                    if (roleEng != null)
+                        RoleOverrides.Add(new KeyValuePair<string, string>(_rowNames[i], roleEng));
+                }
 
-                    // Перекрывание вещества
-                    string cur = _grid.Rows[i].Cells[3].Value as string;
-                    if (!string.IsNullOrEmpty(cur) && cur != _autoMats[i])
-                        Overrides.Add(new KeyValuePair<string, string>("=" + _rowNames[i], MaterialNames.ToId(cur)));
-
-                    // Перекрывание роли
-                    string roleText = _grid.Rows[i].Cells[2].Value as string;
-                    if (!string.IsNullOrEmpty(roleText) && roleText != _autoRoles[i])
+                // Плотность
+                string matText = _grid.Rows[i].Cells[3].Value as string;
+                string id = MaterialNames.ToId(matText);
+                string dtxt = _grid.Rows[i].Cells[4].Value as string;
+                if (!string.IsNullOrEmpty(dtxt))
+                {
+                    dtxt = dtxt.Replace(',', '.');
+                    double dv;
+                    if (double.TryParse(dtxt, NumberStyles.Float, CultureInfo.InvariantCulture, out dv) && dv > 0.0)
                     {
-                        string roleEng = RuToRoleName(roleText);
-                        if (roleEng != null)
-                            RoleOverrides.Add(new KeyValuePair<string, string>(_rowNames[i], roleEng));
+                        MaterialDef md = _lib.Find(id);
+                        if (md == null || Math.Abs(md.DensityGcm3 - dv) > 1e-9)
+                            densDict[id] = dv;
                     }
                 }
             }
+
+            foreach (KeyValuePair<string, double> kv in densDict)
+                DensityOverrides.Add(kv);
 
             // Сравнение с начальным набором исключений
             var initialSet = new HashSet<string>(_initialExcluded, StringComparer.OrdinalIgnoreCase);

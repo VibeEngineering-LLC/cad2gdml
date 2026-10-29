@@ -47,6 +47,7 @@ namespace Cad2Gdml.Cli
             double weldTol = 0.0;
             var matOverrides = new List<KeyValuePair<string, string>>();
             var roleOverrides = new List<KeyValuePair<string, string>>();
+            var densityOverrides = new List<KeyValuePair<string, double>>();
 
             int idx = 0;
             while (idx < args.Length)
@@ -138,6 +139,37 @@ namespace Cad2Gdml.Cli
                     }
                     roleOverrides.Add(new KeyValuePair<string, string>(partName, roleVal));
                 }
+                else if (a == "--density")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --density."); return 2; }
+                    string dval = args[++idx];
+                    int sep = dval.IndexOf('=');
+                    if (sep <= 0 || sep >= dval.Length - 1)
+                    {
+                        Console.Error.WriteLine("Формат --density: <вещество>=<г/см3>. Получено: " + dval);
+                        return 2;
+                    }
+                    string matId = dval.Substring(0, sep).Trim();
+                    string rhoText = dval.Substring(sep + 1).Trim();
+                    if (matId.Length == 0 || rhoText.Length == 0)
+                    {
+                        Console.Error.WriteLine("Формат --density: <вещество>=<г/см3>. Получено: " + dval);
+                        return 2;
+                    }
+                    rhoText = rhoText.Replace(',', '.');
+                    double rho;
+                    if (!double.TryParse(rhoText, NumberStyles.Float, CultureInfo.InvariantCulture, out rho))
+                    {
+                        Console.Error.WriteLine("Формат --density: <вещество>=<г/см3>. Получено: " + dval);
+                        return 2;
+                    }
+                    if (rho <= 0.0)
+                    {
+                        Console.Error.WriteLine("Формат --density: <вещество>=<г/см3>. Получено: " + dval);
+                        return 2;
+                    }
+                    densityOverrides.Add(new KeyValuePair<string, double>(matId, rho));
+                }
                 else if (a == "--allow-default-material")
                 {
                     allowDefault = true;
@@ -203,12 +235,13 @@ namespace Cad2Gdml.Cli
                 }
             }
 
-            // Проверка --front: допустимы только +z, -z, auto
+            // Проверка --front: допустимы +x, -x, +y, -y, +z, -z, auto
             if (front != null)
             {
-                if (front != "+z" && front != "-z" && front != "auto")
+                if (front != "+x" && front != "-x" && front != "+y" && front != "-y"
+                    && front != "+z" && front != "-z" && front != "auto")
                 {
-                    Console.Error.WriteLine("неизвестное значение --front: " + front + " (допустимо: +z, -z, auto)");
+                    Console.Error.WriteLine("неизвестное значение --front: " + front + " (допустимо: +x, -x, +y, -y, +z, -z, auto)");
                     return 2;
                 }
             }
@@ -231,7 +264,8 @@ namespace Cad2Gdml.Cli
                 NoRepair = noRepair,
                 WeldTolMm = weldTol,
                 MaterialOverrides = matOverrides,
-                RoleOverrides = (roleOverrides.Count > 0) ? roleOverrides : null
+                RoleOverrides = (roleOverrides.Count > 0) ? roleOverrides : null,
+                DensityOverrides = (densityOverrides.Count > 0) ? densityOverrides : null
             };
 
             // Запуск конвейера
@@ -256,17 +290,19 @@ namespace Cad2Gdml.Cli
         private static void PrintUsage()
         {
             Console.WriteLine("Использование: cad2gdml <вход>... --out <каталог> [параметры]");
+            Console.WriteLine("  Вход: .stl .obj .step .stp .blend .3mf (или каталог с .stl)");
             Console.WriteLine();
             Console.WriteLine("Параметры:");
             Console.WriteLine("  --out <каталог>            Каталог вывода (обязательно)");
             Console.WriteLine("  --name <база>              Базовое имя выходных файлов");
             Console.WriteLine("  --unit mm|cm|m|inch        Единицы входных файлов");
             Console.WriteLine("  --crystal <имя>            Имя детали-кристалла");
-            Console.WriteLine("  --front +z|-z|auto         Направление передней грани");
+            Console.WriteLine("  --front +z|-z|+x|-x|+y|-y|auto  Ось кристалла в файле (буква) и передний торец (знак)");
             Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
             Console.WriteLine("  --weld <мм>                Допуск сшивки вершин (по умолчанию 1e-5)");
             Console.WriteLine("  --material <имя>=<вещество>  Назначить вещество деталям, в имени которых есть <имя> (повторяемый)");
             Console.WriteLine("  --role <имя>=<роль>         Назначить роль детали: Crystal, Source, Container, Shield, Housing, Other (повторяемый)");
+            Console.WriteLine("  --density <вещество>=<г/см3> Плотность вещества вместо справочной (повторяемый)");
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
             Console.WriteLine("  --keep-open                Оставлять открытые сетки с предупреждением");

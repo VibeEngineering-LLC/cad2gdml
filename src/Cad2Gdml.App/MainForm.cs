@@ -64,6 +64,7 @@ namespace Cad2Gdml.App
         private PipelineResult _lastResult;
         private List<KeyValuePair<string, string>> _matOverrides = new List<KeyValuePair<string, string>>();
         private List<KeyValuePair<string, string>> _roleOverrides = new List<KeyValuePair<string, string>>();
+        private List<KeyValuePair<string, double>> _densityOverrides = new List<KeyValuePair<string, double>>();
         private List<string> _excluded = new List<string>();
 
         public MainForm()
@@ -123,11 +124,11 @@ namespace Cad2Gdml.App
             _txtCrystal.Width = 130;
             _txtCrystal.Margin = new Padding(4);
 
-            var lblFront = MakeLabel("Фронт:");
+            var lblFront = MakeLabel("Ось/фронт:");
             lblFront.MaximumSize = Size.Empty;
             _cmbFront = new ComboBox();
             _cmbFront.DropDownStyle = ComboBoxStyle.DropDownList;
-            _cmbFront.Items.AddRange(new object[] { "auto", "+z", "-z" });
+            _cmbFront.Items.AddRange(new object[] { "auto", "+z", "-z", "+x", "-x", "+y", "-y" });
             _cmbFront.SelectedIndex = 0;
             _cmbFront.Width = 70;
             _cmbFront.Margin = new Padding(4);
@@ -222,7 +223,7 @@ namespace Cad2Gdml.App
 
             // --- Подпись про 3MF и STEP ---
             var lblUnitNote = new Label();
-            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF). STEP — в миллиметрах.";
+            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF). STEP — в миллиметрах. Ось/фронт: буква — ось кристалла в файле, знак — передний торец.";
             lblUnitNote.Font = new Font("Segoe UI", 9f, FontStyle.Italic);
             lblUnitNote.AutoSize = true;
             lblUnitNote.Dock = DockStyle.Top;
@@ -350,6 +351,7 @@ namespace Cad2Gdml.App
         {
             _matOverrides.Clear();
             _roleOverrides.Clear();
+            _densityOverrides.Clear();
             _excluded.Clear();
             _btnMaterials.Enabled = false;
         }
@@ -365,7 +367,7 @@ namespace Cad2Gdml.App
         {
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp|STL|*.stl|OBJ|*.obj|3MF|*.3mf|STEP|*.step;*.stp|Все|*.*";
+                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp;*.blend|STL|*.stl|OBJ|*.obj|3MF|*.3mf|STEP|*.step;*.stp|Blender|*.blend|Все|*.*";
                 dlg.Multiselect = true;
                 if (!string.IsNullOrEmpty(_lastFolder) && Directory.Exists(_lastFolder))
                     dlg.InitialDirectory = _lastFolder;
@@ -478,7 +480,7 @@ namespace Cad2Gdml.App
 
             if (inputs.Count == 0)
             {
-                SetStatus("Нет поддерживаемых файлов (.stl/.obj/.3mf/.step).", false);
+                SetStatus("Нет поддерживаемых файлов (.stl/.obj/.3mf/.step/.blend).", false);
                 return;
             }
 
@@ -514,6 +516,10 @@ namespace Cad2Gdml.App
             // Переопределения ролей
             if (_roleOverrides.Count > 0)
                 opts.RoleOverrides = new List<KeyValuePair<string, string>>(_roleOverrides);
+
+            // Плотности вручную
+            if (_densityOverrides.Count > 0)
+                opts.DensityOverrides = new List<KeyValuePair<string, double>>(_densityOverrides);
 
             // Исключаемые детали
             if (_excluded.Count > 0)
@@ -677,6 +683,8 @@ namespace Cad2Gdml.App
 
             using (var dlg = new SceneViewerForm(_lastResult.Scene, _excluded))
             {
+                dlg.SetInitialDensities(_densityOverrides);
+
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
                     // Обновляем набор исключённых
@@ -724,8 +732,30 @@ namespace Cad2Gdml.App
                         }
                     }
 
+                    // Слияние плотностей
+                    if (dlg.DensityOverrides.Count > 0)
+                    {
+                        for (int i = 0; i < dlg.DensityOverrides.Count; i++)
+                        {
+                            string key = dlg.DensityOverrides[i].Key;
+                            double val = dlg.DensityOverrides[i].Value;
+                            bool found = false;
+                            for (int j = 0; j < _densityOverrides.Count; j++)
+                            {
+                                if (_densityOverrides[j].Key == key)
+                                {
+                                    _densityOverrides[j] = new KeyValuePair<string, double>(key, val);
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                _densityOverrides.Add(new KeyValuePair<string, double>(key, val));
+                        }
+                    }
+
                     // Пересчёт если есть переопределения или изменился набор исключений
-                    if (dlg.Overrides.Count > 0 || dlg.RoleOverrides.Count > 0 || dlg.ExclusionChanged)
+                    if (dlg.Overrides.Count > 0 || dlg.RoleOverrides.Count > 0 || dlg.ExclusionChanged || dlg.DensityOverrides.Count > 0)
                         OnConvert(null, EventArgs.Empty);
                 }
             }
@@ -832,7 +862,7 @@ namespace Cad2Gdml.App
                     string ext = Path.GetExtension(f);
                     if (ext == null) continue;
                     ext = ext.ToLowerInvariant();
-                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf" || ext == ".step" || ext == ".stp")
+                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf" || ext == ".step" || ext == ".stp" || ext == ".blend")
                         result.Add(f);
                 }
                 return result.ToArray();
