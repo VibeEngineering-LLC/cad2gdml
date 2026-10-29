@@ -158,7 +158,6 @@ namespace Cad2Gdml.Sketch
                     {
                         // Пробы вертикального сдвига
                         float[] offsets = new float[] { h, -h, 2f * h, -2f * h, 3f * h, -3f * h };
-                        bool placed = false;
                         for (int i = 0; i < offsets.Length; i++)
                         {
                             PointF shifted = new PointF(anchor.X, anchor.Y + offsets[i]);
@@ -169,7 +168,6 @@ namespace Cad2Gdml.Sketch
                                 g.DrawLine(leaderPen, anchor.X, anchor.Y, shifted.X, shifted.Y);
                                 g.DrawString(r.Label, f, br, shifted, sf);
                                 drawn.Add(tryRect);
-                                placed = true;
                                 break;
                             }
                         }
