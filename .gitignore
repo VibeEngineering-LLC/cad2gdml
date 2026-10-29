@@ -5,3 +5,4 @@ work/
 tools/ocpenv/
 dist/*.zip
 dist/cad2gdml-v0.[4-9]*/
+dist/
