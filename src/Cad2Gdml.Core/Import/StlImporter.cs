@@ -28,9 +28,9 @@ namespace Cad2Gdml.Import
 
             Mesh mesh = null;
 
-            // Попытка бинарного формата
             if (len >= 84)
             {
+                // Попытка бинарного формата
                 byte[] head = new byte[84];
                 using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
@@ -44,11 +44,23 @@ namespace Cad2Gdml.Import
                         }
                     }
                 }
-            }
 
-            // Иначе — ASCII
-            if (mesh == null)
+                // Размер не совпал — проверяем ASCII-признаки
+                if (mesh == null)
+                {
+                    if (LooksLikeAscii(path))
+                    {
+                        mesh = ReadAscii(path, unitToMm);
+                    }
+                    else
+                    {
+                        throw new InvalidDataException("STL: size mismatch");
+                    }
+                }
+            }
+            else
             {
+                // Коротко для бинарного — только ASCII
                 mesh = ReadAscii(path, unitToMm);
             }
 
@@ -78,21 +90,54 @@ namespace Cad2Gdml.Import
             return result;
         }
 
-        // Бинарный STL: 80-байтный хедер + uint32 + 50 байт на треугольник
+        // Проверка: файл начинается с "solid" и содержит "facet"
+        private static bool LooksLikeAscii(string path)
+        {
+            try
+            {
+                string text;
+                using (StreamReader sr = new StreamReader(path, Encoding.UTF8, true))
+                {
+                    text = sr.ReadToEnd();
+                }
+
+                if (text.Length > 0 && text[0] == '\uFEFF')
+                {
+                    text = text.Substring(1);
+                }
+
+                string trimmed = text.TrimStart();
+                if (trimmed.Length < 5)
+                {
+                    return false;
+                }
+
+                string head = trimmed.Substring(0, 5).ToLowerInvariant();
+                if (head != "solid")
+                {
+                    return false;
+                }
+
+                return trimmed.IndexOf("facet", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Бинарный STL: 80 байт хедер + uint32 + 50 байт на треугольник
         private static Mesh ReadBinary(string path, uint count, double unitToMm)
         {
             Mesh mesh = new Mesh();
             using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
             using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8, false))
             {
-                // Пропускаем 80 байт хедера
                 br.ReadBytes(80);
-                // Пропускаем uint32 (счётчик уже известен)
                 br.ReadUInt32();
 
                 for (uint i = 0; i < count; i++)
                 {
-                    // Нормаль — не нужна для тесселяции
                     br.ReadSingle();
                     br.ReadSingle();
                     br.ReadSingle();
@@ -107,7 +152,6 @@ namespace Cad2Gdml.Import
                     float cy = br.ReadSingle();
                     float cz = br.ReadSingle();
 
-                    // Attribute byte count — пропускаем
                     br.ReadUInt16();
 
                     Vec3d v0 = new Vec3d((double)ax * unitToMm, (double)ay * unitToMm, (double)az * unitToMm);
@@ -142,38 +186,27 @@ namespace Cad2Gdml.Import
             }
 
             string trimmed = text.TrimStart();
-            if (trimmed.Length < 5 || Char.ToLowerInvariant(trimmed[0]) != 's')
-            {
-                throw new InvalidDataException("Не распознан формат STL: ожидается заголовок 'solid'.");
-            }
-
-            // Проверяем первые 5 символов (без учёта регистра)
-            if (trimmed.Length >= 5)
-            {
-                string head = trimmed.Substring(0, 5).ToLowerInvariant();
-                if (head != "solid")
-                {
-                    throw new InvalidDataException("Не распознан формат STL: ожидается заголовок 'solid'.");
-                }
-            }
-            else
+            if (trimmed.Length < 5)
             {
                 throw new InvalidDataException("Не распознан формат STL: файл слишком короткий.");
+            }
+
+            string head = trimmed.Substring(0, 5).ToLowerInvariant();
+            if (head != "solid")
+            {
+                throw new InvalidDataException("Не распознан формат STL: ожидается заголовок 'solid'.");
             }
 
             Mesh mesh = new Mesh();
             Vec3d a = new Vec3d(0, 0, 0);
             Vec3d b = new Vec3d(0, 0, 0);
             Vec3d c = new Vec3d(0, 0, 0);
-            int slot = 0; // 0, 1, 2 — текущая вершина в треугольнике
+            int slot = 0;
 
             string[] lines = text.Split('\n');
             for (int li = 0; li < lines.Length; li++)
             {
-                string line = lines[li];
-                // Убираем \r и пробелы
-                line = line.TrimEnd('\r');
-                line = line.TrimStart();
+                string line = lines[li].TrimEnd('\r').TrimStart();
 
                 if (line.Length < 6)
                 {
@@ -181,32 +214,25 @@ namespace Cad2Gdml.Import
                 }
 
                 // Проверяем начало "vertex"
-                if (line[0] != 'v' && line[0] != 'V')
-                {
-                    continue;
-                }
-                if (!(line.Length >= 6 && line.Substring(0, 6).ToLowerInvariant() == "vertex"))
+                string kw = line.Substring(0, 6).ToLowerInvariant();
+                if (kw != "vertex")
                 {
                     continue;
                 }
 
-                // Парсим числа после "vertex"
                 string rest = line.Substring(6).TrimStart();
                 if (rest.Length == 0)
                 {
-                    continue;
+                    throw new InvalidDataException("STL line " + (li + 1) + ": пустая строка vertex");
                 }
 
-                // Разделяем по пробелам, игнорируя пустые токены
                 string[] tokens = rest.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length < 3)
                 {
-                    continue;
+                    throw new InvalidDataException("STL line " + (li + 1) + ": недостаточно чисел в vertex");
                 }
 
-                double x;
-                double y;
-                double z;
+                double x, y, z;
                 try
                 {
                     x = double.Parse(tokens[0], NumberStyles.Float, CultureInfo.InvariantCulture);
@@ -215,7 +241,18 @@ namespace Cad2Gdml.Import
                 }
                 catch (FormatException)
                 {
-                    continue;
+                    throw new InvalidDataException("STL line " + (li + 1) + ": некорректное число");
+                }
+                catch (OverflowException)
+                {
+                    throw new InvalidDataException("STL line " + (li + 1) + ": число вне диапазона");
+                }
+
+                // Защита от NaN / Infinity
+                if (double.IsNaN(x) || double.IsNaN(y) || double.IsNaN(z) ||
+                    double.IsInfinity(x) || double.IsInfinity(y) || double.IsInfinity(z))
+                {
+                    throw new InvalidDataException("STL line " + (li + 1) + ": NaN или Infinity");
                 }
 
                 Vec3d v = new Vec3d(x * unitToMm, y * unitToMm, z * unitToMm);
@@ -239,6 +276,12 @@ namespace Cad2Gdml.Import
                 {
                     slot = 0;
                 }
+            }
+
+            // Нечётный хвост — неполный треугольник
+            if (slot > 0)
+            {
+                throw new InvalidDataException("STL: неполный треугольник на конце файла (" + slot + " вершин(ы) без третьей)");
             }
 
             if (mesh.TriangleCount == 0)

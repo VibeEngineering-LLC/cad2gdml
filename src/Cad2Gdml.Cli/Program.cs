@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using Cad2Gdml.Pipeline;
 using Cad2Gdml.Scene;
 
@@ -11,6 +12,9 @@ namespace Cad2Gdml.Cli
     {
         public static int Main(string[] args)
         {
+            // Кодировка вывода
+            Console.OutputEncoding = new UTF8Encoding(false);
+
             // Справка
             for (int i = 0; i < args.Length; i++)
             {
@@ -36,6 +40,7 @@ namespace Cad2Gdml.Cli
             string front = null;
             string materials = null;
             bool allowDefault = false;
+            bool dropOpen = false;
 
             int idx = 0;
             while (idx < args.Length)
@@ -75,6 +80,10 @@ namespace Cad2Gdml.Cli
                 else if (a == "--allow-default-material")
                 {
                     allowDefault = true;
+                }
+                else if (a == "--drop-open")
+                {
+                    dropOpen = true;
                 }
                 else if (a.Length > 2 && a[0] == '-' && a[1] == '-')
                 {
@@ -116,11 +125,15 @@ namespace Cad2Gdml.Cli
                 }
             }
 
-            // Проверка --front
-            if (front != null && front != "+z" && front != "-z")
+            // Проверка --front: +z/-z или +x/-x/+y/-y
+            if (front != null)
             {
-                Console.Error.WriteLine("Недопустимый --front: " + front + " (ожидается +z или -z).");
-                return 2;
+                if (front != "+z" && front != "-z" && front != "+x" && front != "-x"
+                    && front != "+y" && front != "-y")
+                {
+                    Console.Error.WriteLine("Недопустимый --front: " + front + " (ожидается +z, -z, +x, -x, +y, -y).");
+                    return 2;
+                }
             }
 
             // Сборка опций конвейера
@@ -134,7 +147,8 @@ namespace Cad2Gdml.Cli
                 CrystalName = crystal,
                 FrontSign = front,
                 MaterialsJsonPath = materials,
-                AllowDefaultMaterial = allowDefault
+                AllowDefaultMaterial = allowDefault,
+                DropOpen = dropOpen
             };
 
             // Запуск конвейера
@@ -146,10 +160,10 @@ namespace Cad2Gdml.Cli
             catch (Exception ex)
             {
                 Console.Error.WriteLine("Внутренняя ошибка: " + ex.Message);
-                return 1;
+                return 9;
             }
 
-            // Печать русскоязычного итога
+            // Печать итога
             PrintSummary(result);
 
             return result.ExitCode;
@@ -165,9 +179,10 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --name <база>              Базовое имя выходных файлов");
             Console.WriteLine("  --unit mm|cm|m|inch        Единицы входных файлов");
             Console.WriteLine("  --crystal <имя>            Имя детали-кристалла");
-            Console.WriteLine("  --front +z|-z              Направление передней грани");
+            Console.WriteLine("  --front +z|-z|+x|-x|+y|-y Направление передней грани");
             Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
+            Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
             Console.WriteLine("  --help, -h                 Эта справка");
         }
 
@@ -214,27 +229,18 @@ namespace Cad2Gdml.Cli
                 }
             }
 
-            // Финальная строка по формату дизайна
-            string id = GetCodeId(result.ExitCode);
+            // Финальная строка: MainErrorId или OK
+            string id;
+            if (result.ExitCode == 0)
+            {
+                id = "OK";
+            }
+            else
+            {
+                id = (!string.IsNullOrEmpty(result.MainErrorId)) ? result.MainErrorId : "E_UNKNOWN";
+            }
             Console.WriteLine();
             Console.WriteLine("cad2gdml: код " + result.ExitCode.ToString(CultureInfo.InvariantCulture) + " " + id);
-        }
-
-        // Соответствие кода выхода → идентификатор
-        private static string GetCodeId(int code)
-        {
-            switch (code)
-            {
-                case 0: return "—";
-                case 1: return "E_INTERNAL";
-                case 2: return "E_FORMAT";
-                case 3: return "E_MESH_OPEN";
-                case 4: return "E_ROLE_NONE";
-                case 5: return "E_MAT_UNASSIGNED";
-                case 6: return "E_OVERLAP";
-                case 7: return "E_STRICT";
-                default: return "E_UNKNOWN";
-            }
         }
     }
 }

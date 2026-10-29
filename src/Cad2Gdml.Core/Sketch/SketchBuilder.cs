@@ -195,27 +195,44 @@ namespace Cad2Gdml.Sketch
             return model;
         }
 
-        // Трубка — зеркальные прямоугольники
+        // Трубка — сечение хордой с учётом смещения оси (X0, Y0)
         private static void AddTube(SketchModel model, Part part)
         {
             double rMax = part.Shape.RMax;
             double rMin = part.Shape.RMin;
             double z0 = part.Shape.Z0;
             double z1 = part.Shape.Z1;
+            double cx = part.Shape.X0;
+            double cy = part.Shape.Y0;
+
+            // Плоскость y=0 не пересекает трубку
+            if (Math.Abs(cy) >= rMax)
+            {
+                return;
+            }
+
+            double halfOuter = Math.Sqrt(Math.Max(0.0, rMax * rMax - cy * cy));
 
             if (rMin <= 0.0)
             {
-                AddToRegions(model, MakeRect(part, -rMax, rMax, z0, z1));
+                AddToRegions(model, MakeRect(part, cx - halfOuter, cx + halfOuter, z0, z1));
             }
             else
             {
-                // Полость: левый и правый сегменты
-                AddToRegions(model, MakeRect(part, -rMax, -rMin, z0, z1));
-                AddToRegions(model, MakeRect(part, rMin, rMax, z0, z1));
+                double halfInner = Math.Sqrt(Math.Max(0.0, rMin * rMin - cy * cy));
+                if (halfInner < 1e-9)
+                {
+                    AddToRegions(model, MakeRect(part, cx - halfOuter, cx + halfOuter, z0, z1));
+                }
+                else
+                {
+                    AddToRegions(model, MakeRect(part, cx - halfOuter, cx - halfInner, z0, z1));
+                    AddToRegions(model, MakeRect(part, cx + halfInner, cx + halfOuter, z0, z1));
+                }
             }
         }
 
-        // Поликонус — зеркальный контур из z-плоскостей
+        // Поликонус — сечение с учётом смещения оси (X0, Y0)
         private static void AddPolycone(SketchModel model, Part part)
         {
             List<double> zp = part.Shape.ZPlane;
@@ -227,15 +244,35 @@ namespace Cad2Gdml.Sketch
                 return;
             }
 
+            double cx = part.Shape.X0;
+            double cy = part.Shape.Y0;
+
+            // Проверка: есть ли хоть один уровень, который пересекает плоскость
+            bool anyVisible = false;
+            for (int i = 0; i < n; i++)
+            {
+                if (Math.Abs(cy) < ro[i])
+                {
+                    anyVisible = true;
+                    break;
+                }
+            }
+            if (!anyVisible)
+            {
+                return;
+            }
+
             // Внешний контур
             List<Vec3d> outer = new List<Vec3d>(n * 2);
             for (int i = 0; i < n; i++)
             {
-                outer.Add(new Vec3d(ro[i], 0.0, zp[i]));
+                double ho = Math.Sqrt(Math.Max(0.0, ro[i] * ro[i] - cy * cy));
+                outer.Add(new Vec3d(cx + ho, 0.0, zp[i]));
             }
             for (int i = n - 1; i >= 0; i--)
             {
-                outer.Add(new Vec3d(-ro[i], 0.0, zp[i]));
+                double ho = Math.Sqrt(Math.Max(0.0, ro[i] * ro[i] - cy * cy));
+                outer.Add(new Vec3d(cx - ho, 0.0, zp[i]));
             }
 
             SketchRegion op = new SketchRegion();
@@ -249,18 +286,20 @@ namespace Cad2Gdml.Sketch
             bool hasHole = false;
             for (int i = 0; i < n; i++)
             {
-                if (ri[i] > 0.0) { hasHole = true; break; }
+                if (ri[i] > 0.0 && Math.Abs(cy) < ri[i]) { hasHole = true; break; }
             }
             if (hasHole)
             {
                 List<Vec3d> inner = new List<Vec3d>(n * 2);
                 for (int i = 0; i < n; i++)
                 {
-                    inner.Add(new Vec3d(ri[i], 0.0, zp[i]));
+                    double hi = Math.Sqrt(Math.Max(0.0, ri[i] * ri[i] - cy * cy));
+                    inner.Add(new Vec3d(cx + hi, 0.0, zp[i]));
                 }
                 for (int i = n - 1; i >= 0; i--)
                 {
-                    inner.Add(new Vec3d(-ri[i], 0.0, zp[i]));
+                    double hi = Math.Sqrt(Math.Max(0.0, ri[i] * ri[i] - cy * cy));
+                    inner.Add(new Vec3d(cx - hi, 0.0, zp[i]));
                 }
 
                 SketchRegion ip = new SketchRegion();
@@ -272,18 +311,26 @@ namespace Cad2Gdml.Sketch
             }
         }
 
-        // Брусок — прямоугольник
+        // Брусок — центр в (X0, Y0, Z0), размер BoxX×BoxY×BoxZ
         private static void AddBox(SketchModel model, Part part)
         {
-            double halfW = part.Shape.BoxX / 2.0;
-            double z0 = part.Shape.Z0;
-            double z1 = part.Shape.Z1;
-            if (z1 <= z0)
+            double bx = part.Shape.BoxX;
+            double by = part.Shape.BoxY;
+            double bz = part.Shape.BoxZ;
+            double cx = part.Shape.X0;
+            double cy = part.Shape.Y0;
+            double cz = part.Shape.Z0;
+
+            // Плоскость y=0 не пересекает бокс
+            if (Math.Abs(cy) > by / 2.0)
             {
-                z1 = z0 + part.Shape.BoxZ;
+                return;
             }
 
-            AddToRegions(model, MakeRect(part, -halfW, halfW, z0, z1));
+            double halfW = bx / 2.0;
+            double halfH = bz / 2.0;
+
+            AddToRegions(model, MakeRect(part, cx - halfW, cx + halfW, cz - halfH, cz + halfH));
         }
 
         // Tessellated — сечение треугольников плоскостью y=0
@@ -441,9 +488,16 @@ namespace Cad2Gdml.Sketch
 
                 if (pts.Count >= 2)
                 {
+                    // Проверка замкнутости: первая и последняя точки совпадают
+                    Vec3d first = pts[0];
+                    Vec3d last = pts[pts.Count - 1];
+                    double dx = first.X - last.X;
+                    double dz = first.Z - last.Z;
+                    bool closed = (dx * dx + dz * dz) < (JoinTol * JoinTol);
+
                     SketchRegion region = new SketchRegion();
                     region.Points = pts;
-                    region.IsClosed = false;
+                    region.IsClosed = closed;
                     region.Role = part.Role;
                     region.Label = part.Name;
                     result.Add(region);

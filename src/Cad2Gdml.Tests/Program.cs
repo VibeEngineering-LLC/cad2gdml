@@ -34,6 +34,10 @@ namespace Cad2Gdml.Tests
                 new KeyValuePair<string, Action>("png_written", CheckPngWritten)
             };
 
+            checks.AddRange(Checks2a.All(_tempDir));
+            checks.AddRange(Checks2b.All(_tempDir));
+            checks.AddRange(Checks2c.All(_tempDir));
+
             foreach (var kv in checks)
             {
                 try

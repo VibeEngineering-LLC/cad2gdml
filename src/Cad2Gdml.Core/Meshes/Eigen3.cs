@@ -27,9 +27,10 @@ namespace Cad2Gdml.Meshes
             // Циклические пасы, максимум 50
             for (int sweep = 0; sweep < 50; sweep++)
             {
-                double off = Math.Abs(a[0,1]) + Math.Abs(a[0,2]) + Math.Abs(a[1,2]);
-                double diag = Math.Abs(a[0,0]) + Math.Abs(a[1,1]) + Math.Abs(a[2,2]);
-                if (diag == 0.0 || off < 1e-14 * diag)
+                // Сумма квадратов внедиагональных и диагональных
+                double off = a[0,1]*a[0,1] + a[0,2]*a[0,2] + a[1,2]*a[1,2];
+                double diag = a[0,0]*a[0,0] + a[1,1]*a[1,1] + a[2,2]*a[2,2];
+                if (off < 1e-24 * (diag + 1e-300))
                     break;
 
                 Step(a, v, 0, 1);
@@ -59,43 +60,45 @@ namespace Cad2Gdml.Meshes
             vectors = new Vec3d[] { x0, x1, x2 };
         }
 
-        // Вращение для пары (p, q)
+        // Вращение для пары (p, q) — классический алгоритм Якоби
         private static void Step(double[,] a, double[,] v, int p, int q)
         {
             double apq = a[p, q];
-            if (Math.Abs(apq) < 1e-18)
+            if (apq == 0.0)
                 return;
 
             double app = a[p, p];
             double aqq = a[q, q];
 
-            // Угол поворота
-            double theta = 0.5 * Math.Atan2(2.0 * apq, aqq - app);
-            double c = Math.Cos(theta);
-            double s = Math.Sin(theta);
+            // Угол через t = tan(θ/2)
+            double theta = (aqq - app) / (2.0 * apq);
+            double sign = theta >= 0.0 ? 1.0 : -1.0;
+            double t = sign / (Math.Abs(theta) + Math.Sqrt(theta * theta + 1.0));
+            double c = 1.0 / Math.Sqrt(t * t + 1.0);
+            double s = t * c;
 
-            // Обновление внедиагональных элементов для третьей строки
-            int r = 3 - p - q; // оставшийся индекс
-            double arp = a[r, p];
-            double arq = a[r, q];
-            a[r, p] = c * arp + s * arq;
-            a[r, q] = -s * arp + c * arq;
-            a[p, r] = a[r, p];
-            a[q, r] = a[r, q];
-
-            // Новые диагональные
-            a[p, p] = c * c * app - s * s * aqq + 2.0 * s * c * apq;
-            a[q, q] = s * s * app + c * c * aqq - 2.0 * s * c * apq;
+            // Обновление диагональных — след сохраняется
+            a[p, p] -= t * apq;
+            a[q, q] += t * apq;
             a[p, q] = 0.0;
             a[q, p] = 0.0;
 
-            // Умножение векторов справа на поворот
+            // Обновление внедиагональных для третьего индекса
+            int r = 3 - p - q;
+            double arp = a[r, p];
+            double arq = a[r, q];
+            a[r, p] = c * arp - s * arq;
+            a[r, q] = s * arp + c * arq;
+            a[p, r] = a[r, p];
+            a[q, r] = a[r, q];
+
+            // Умножение матрицы векторов справа на поворот
             for (int i = 0; i < 3; i++)
             {
                 double vip = v[i, p];
                 double viq = v[i, q];
-                v[i, p] = c * vip + s * viq;
-                v[i, q] = -s * vip + c * viq;
+                v[i, p] = c * vip - s * viq;
+                v[i, q] = s * vip + c * viq;
             }
         }
 

@@ -27,12 +27,14 @@ namespace Cad2Gdml.Pipeline
         public string FrontSign;
         public string MaterialsJsonPath;
         public bool AllowDefaultMaterial;
+        public bool DropOpen;
     }
 
     // Результат конвейера
     public sealed class PipelineResult
     {
         public int ExitCode;
+        public string MainErrorId;
         public SceneModel Scene;
         public string GdmlPath;
         public string PngPath;
@@ -55,54 +57,74 @@ namespace Cad2Gdml.Pipeline
             {
                 // 1. Загрузка входов
                 bool loaded;
-                try { loaded = LoadInputs(o, scene); }
-                catch (Exception lex) when (lex is IndexOutOfRangeException || lex is ArgumentOutOfRangeException || lex is KeyNotFoundException || lex is OverflowException)
+                try
                 {
-                    // разбор формата вышел за границы — вход повреждён
-                    scene.Add("E_FORMAT", DiagSeverity.Error, "", "Повреждённый файл: " + lex.Message);
-                    return Fail(result, 2);
+                    loaded = LoadInputs(o, scene);
+                }
+                catch (Exception lex) when (lex is FileNotFoundException || lex is DirectoryNotFoundException
+                    || lex is InvalidDataException || lex is FormatException || lex is IOException
+                    || lex is OverflowException || lex is IndexOutOfRangeException
+                    || lex is ArgumentOutOfRangeException)
+                {
+                    scene.Add(MapExceptionCode(lex), DiagSeverity.Error, "", lex.Message);
+                    return Fail(result);
                 }
                 if (!loaded)
-                    return Fail(result, 2);
+                    return Fail(result);
 
                 // 2. Сшивка и топология
                 if (!ProcessMeshes(scene))
-                    return Fail(result, 3);
+                    return Fail(result);
 
-                // 3. Роли
+                // 3. Роли и открытые сетки
                 if (!AssignRoles(o, scene))
-                    return Fail(result, scene.Diagnostics.Exists(d => d.Code == "E_MESH_OPEN") ? 3 : 4);
+                    return Fail(result);
 
                 // 4. Кадр координат
                 if (!BuildFrame(o, scene))
-                    return Fail(result, 4);
+                    return Fail(result);
 
                 // 5. Распознавание тел
                 RecognizeShapes(scene);
 
                 // 6. Вещества
                 if (!ResolveMaterials(o, scene))
-                    return Fail(result, 5);
+                    return Fail(result);
 
                 // 7. Запись выходных
-                WriteOutputs(o, scene, result);
+                try
+                {
+                    WriteOutputs(o, scene, result);
+                }
+                catch (Exception lex) when (lex is FileNotFoundException || lex is DirectoryNotFoundException
+                    || lex is InvalidDataException || lex is FormatException || lex is IOException
+                    || lex is OverflowException || lex is IndexOutOfRangeException
+                    || lex is ArgumentOutOfRangeException)
+                {
+                    scene.Add(MapExceptionCode(lex), DiagSeverity.Error, "", lex.Message);
+                    return Fail(result);
+                }
 
                 result.ExitCode = 0;
-                return result;
-            }
-            catch (Exception ex) when (ex is InvalidDataException || ex is FormatException || ex is EndOfStreamException || ex is IOException || ex is UnauthorizedAccessException)
-            {
-                // Битый/недоступный вход — не внутренняя ошибка
-                scene.Add("E_FORMAT", DiagSeverity.Error, "", ex.Message);
-                result.ExitCode = 2;
                 return result;
             }
             catch (Exception ex)
             {
                 scene.Add("E_INTERNAL", DiagSeverity.Error, "", ex.Message);
-                result.ExitCode = 9;
-                return result;
+                return Fail(result);
             }
+        }
+
+        // Код из исключения; InvalidDataException с "E_" → сам код
+        private static string MapExceptionCode(Exception ex)
+        {
+            if (ex is InvalidDataException)
+            {
+                string msg = ex.Message;
+                if (msg != null && msg.StartsWith("E_"))
+                    return msg;
+            }
+            return "E_FORMAT";
         }
 
         // Загрузка файлов по расширению
@@ -116,9 +138,8 @@ namespace Cad2Gdml.Pipeline
 
             foreach (string input in o.Inputs)
             {
-
-                // STEP — не поддерживается
                 string ext = Directory.Exists(input) ? ".stl" : GetExt(input);
+
                 if (ext == ".step" || ext == ".stp")
                 {
                     scene.Add("E_STEP_NOT_SUPPORTED", DiagSeverity.Error, input,
@@ -130,8 +151,7 @@ namespace Cad2Gdml.Pipeline
                 {
                     if (o.UnitToMm == 0.0)
                     {
-                        scene.Add("E_UNIT_MISSING", DiagSeverity.Error, input,
-                            "Единицы не заданы для STL.");
+                        scene.Add("E_UNIT_MISSING", DiagSeverity.Error, input, "Единицы не заданы для STL.");
                         return false;
                     }
                     if (Directory.Exists(input))
@@ -153,8 +173,7 @@ namespace Cad2Gdml.Pipeline
                 {
                     if (o.UnitToMm == 0.0)
                     {
-                        scene.Add("E_UNIT_MISSING", DiagSeverity.Error, input,
-                            "Единицы не заданы для OBJ.");
+                        scene.Add("E_UNIT_MISSING", DiagSeverity.Error, input, "Единицы не заданы для OBJ.");
                         return false;
                     }
                     var parts = ObjImporter.Load(input, o.UnitToMm);
@@ -167,8 +186,7 @@ namespace Cad2Gdml.Pipeline
                 }
                 else
                 {
-                    scene.Add("E_FORMAT", DiagSeverity.Error, input,
-                        "Неподдерживаемое расширение: " + ext);
+                    scene.Add("E_FORMAT", DiagSeverity.Error, input, "Неподдерживаемое расширение: " + ext);
                     return false;
                 }
             }
@@ -202,7 +220,7 @@ namespace Cad2Gdml.Pipeline
                 Part p = scene.Parts[i];
                 if (p.Mesh == null) continue;
 
-                // Нечисловые координаты — отказ до сшивки
+                // Нечисловые координаты
                 foreach (Vec3d vv in p.Mesh.Vertices)
                 {
                     if (double.IsNaN(vv.X + vv.Y + vv.Z) || double.IsInfinity(vv.X + vv.Y + vv.Z))
@@ -215,16 +233,45 @@ namespace Cad2Gdml.Pipeline
                 // Сшивка вершин
                 p.Mesh = MeshWelder.Weld(p.Mesh, weldTol);
 
-                // Топология: открытые рёбра
+                // Топология
                 var topo = MeshTopology.Analyze(p.Mesh);
+
+                if (topo.NonManifoldEdges > 0)
+                {
+                    scene.Add("E_MESH_NONMANIFOLD", DiagSeverity.Error, p.Name,
+                        "Неманifold рёбра: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture));
+                    return false;
+                }
+
+                if (topo.InconsistentEdges > 0)
+                {
+                    scene.Add("E_MESH_ORIENT", DiagSeverity.Error, p.Name,
+                        "Несогласованная ориентация: " + topo.InconsistentEdges.ToString(CultureInfo.InvariantCulture));
+                    return false;
+                }
+
                 if (topo.OpenEdges > 0)
                 {
                     p.MeshOpen = true;
-                    continue;
                 }
 
-                // Знаковый объём
+                // Пустая деталь: < 4 треугольников или |V| < 1e-6
+                if (p.Mesh.TriangleCount < 4)
+                {
+                    scene.Add("E_MESH_EMPTY", DiagSeverity.Error, p.Name,
+                        "Менее 4 треугольников: " + p.Mesh.TriangleCount.ToString(CultureInfo.InvariantCulture));
+                    return false;
+                }
+
                 double vol = SignedVolume(p.Mesh);
+                if (Math.Abs(vol) < 1e-6)
+                {
+                    scene.Add("E_MESH_EMPTY", DiagSeverity.Error, p.Name,
+                        "Объём < 1e-6 мм³: " + vol.ToString("R", CultureInfo.InvariantCulture));
+                    return false;
+                }
+
+                // Отрицательный объём — инверсия
                 if (vol < 0.0)
                 {
                     p.Mesh.FlipWinding();
@@ -252,27 +299,34 @@ namespace Cad2Gdml.Pipeline
             return vol / 6.0;
         }
 
-        // Назначение ролей и проверка кристалла
+        // Назначение ролей и обработка открытых сеток
         private static bool AssignRoles(PipelineOptions o, SceneModel scene)
         {
             var roleOpt = new RoleOptions();
             RoleAssigner.Assign(scene, roleOpt, o.CrystalName);
 
-            // Открытые сетки: у кристалла/образца/сосуда — ошибка, у прочих деталь отбрасывается с предупреждением
+            // Открытые сетки: по умолчанию — ошибка для любой детали;
+            // при DropOpen — неключевые отбрасываются с предупреждением
             for (int oi = scene.Parts.Count - 1; oi >= 0; oi--)
             {
                 Part op = scene.Parts[oi];
                 if (!op.MeshOpen) continue;
-                if (op.Role == PartRole.Crystal || op.Role == PartRole.Source || op.Role == PartRole.Container)
+
+                bool isKey = (op.Role == PartRole.Crystal || op.Role == PartRole.Source
+                    || op.Role == PartRole.Container);
+
+                if (isKey || !o.DropOpen)
                 {
-                    scene.Add("E_MESH_OPEN", DiagSeverity.Error, op.Name, "Открытая сетка у ключевой детали.");
+                    scene.Add("E_MESH_OPEN", DiagSeverity.Error, op.Name, "Открытая сетка.");
                     return false;
                 }
-                scene.Add("W_MESH_OPEN_DROPPED", DiagSeverity.Warning, op.Name, "Сетка открыта — деталь исключена из сцены.");
+
+                scene.Add("W_MESH_OPEN_DROPPED", DiagSeverity.Warning, op.Name,
+                    "Сетка открыта — деталь исключена из сцены.");
                 scene.Parts.RemoveAt(oi);
             }
 
-            // Ошибка ролей
+            // Ошибки ролей из диагностики
             for (int i = 0; i < scene.Diagnostics.Count; i++)
             {
                 Diagnostic d = scene.Diagnostics[i];
@@ -321,6 +375,7 @@ namespace Cad2Gdml.Pipeline
             }
             catch (InvalidOperationException)
             {
+                scene.Add("E_FRONT_AMBIG", DiagSeverity.Error, "", "Не удалось построить кадр.");
                 return false;
             }
 
@@ -354,7 +409,6 @@ namespace Cad2Gdml.Pipeline
                     continue;
                 }
 
-                scene.Add(whyNot ?? "I_REV_NONE", DiagSeverity.Info, p.Name, "не тело вращения: " + (whyNot ?? "?"));
                 p.Shape = new SolidShape();
                 p.Shape.Kind = SolidKind.Tessellated;
             }
@@ -380,10 +434,18 @@ namespace Cad2Gdml.Pipeline
                 if (!string.IsNullOrEmpty(p.Material))
                     continue;
 
+                lib.LastResolveWasGuess = false;
                 string mat = lib.Resolve(p.Name);
+
                 if (mat != null)
                 {
                     p.Material = mat;
+                    // Предположительное назначение кристалла
+                    if (p.Role == PartRole.Crystal && lib.LastResolveWasGuess)
+                    {
+                        scene.Add("W_MAT_GUESS", DiagSeverity.Warning, p.Name,
+                            "Вещество кристалла назначено по общим словам: " + mat);
+                    }
                     continue;
                 }
 
@@ -395,8 +457,7 @@ namespace Cad2Gdml.Pipeline
                 }
                 else
                 {
-                    scene.Add("E_MAT_UNASSIGNED", DiagSeverity.Error, p.Name,
-                        "Вещество не назначено.");
+                    scene.Add("E_MAT_UNASSIGNED", DiagSeverity.Error, p.Name, "Вещество не назначено.");
                     return false;
                 }
             }
@@ -409,7 +470,12 @@ namespace Cad2Gdml.Pipeline
         {
             string outDir = (o.OutDir != null && o.OutDir.Length > 0) ? o.OutDir : ".";
             Directory.CreateDirectory(outDir);
-            string baseName = (o.BaseName != null && o.BaseName.Length > 0) ? o.BaseName : "output";
+
+            string baseName = o.BaseName;
+            if (baseName == null || baseName.Length == 0)
+            {
+                baseName = DeriveBaseName(o);
+            }
 
             string gdmlPath = Path.Combine(outDir, baseName + ".gdml");
             string pngPath = Path.Combine(outDir, baseName + ".png");
@@ -437,6 +503,27 @@ namespace Cad2Gdml.Pipeline
             result.ReportPath = reportPath;
         }
 
+        // Базовое имя из первого входа
+        private static string DeriveBaseName(PipelineOptions o)
+        {
+            if (o.Inputs != null && o.Inputs.Count > 0)
+            {
+                string first = o.Inputs[0];
+                string name;
+                if (Directory.Exists(first))
+                {
+                    name = Path.GetFileName(first.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                }
+                else
+                {
+                    name = Path.GetFileNameWithoutExtension(first);
+                }
+                if (!string.IsNullOrEmpty(name))
+                    return name;
+            }
+            return "output";
+        }
+
         // Уникальные имена входов
         private static List<string> GetInputNames(SceneModel scene)
         {
@@ -457,11 +544,38 @@ namespace Cad2Gdml.Pipeline
             return (ext != null) ? ext.ToLowerInvariant() : "";
         }
 
-        // Установить код выхода
-        private static PipelineResult Fail(PipelineResult result, int code)
+        // Выход: код из первой Error-диагностики по таблице префиксов
+        private static PipelineResult Fail(PipelineResult result)
         {
-            result.ExitCode = code;
+            string firstError = null;
+            for (int i = 0; i < result.Diagnostics.Count; i++)
+            {
+                if (result.Diagnostics[i].Severity == DiagSeverity.Error)
+                {
+                    firstError = result.Diagnostics[i].Code;
+                    break;
+                }
+            }
+            result.MainErrorId = firstError;
+            result.ExitCode = DeriveExitCode(firstError);
             return result;
+        }
+
+        // Таблица префиксов → код выхода
+        private static int DeriveExitCode(string code)
+        {
+            if (code == null) return 9;
+            if (code.StartsWith("E_FORMAT") || code.StartsWith("E_UNIT_MISSING")
+                || code.StartsWith("E_STEP_NOT_SUPPORTED"))
+                return 2;
+            if (code.StartsWith("E_MESH"))
+                return 3;
+            if (code.StartsWith("E_ROLE") || code.StartsWith("E_FRONT_AMBIG")
+                || code.StartsWith("E_AXIS_AMBIG"))
+                return 4;
+            if (code.StartsWith("E_MAT") || code.StartsWith("E_ELEMENT_UNKNOWN"))
+                return 5;
+            return 9;
         }
     }
 }

@@ -20,6 +20,7 @@ namespace Cad2Gdml.Materials
     {
         public string Pattern;
         public string Material;
+        public bool IsGuess; // true если совпадение по общим словам (crystal/scint)
     }
 
     // Библиотека веществ и правил назначения
@@ -29,6 +30,9 @@ namespace Cad2Gdml.Materials
         public List<MaterialRule> Rules;
         public string DefaultMaterial;
 
+        // Установлено при совпадении по общим словам (crystal/кристалл/scint)
+        public bool LastResolveWasGuess;
+
         // Встроенная библиотека с NIST-веществами
         public static MaterialLibrary Default()
         {
@@ -36,6 +40,7 @@ namespace Cad2Gdml.Materials
             lib.Materials = new Dictionary<string, MaterialDef>(StringComparer.OrdinalIgnoreCase);
             lib.Rules = new List<MaterialRule>();
             lib.DefaultMaterial = "G4_AIR";
+            lib.LastResolveWasGuess = false;
 
             // NIST
             lib.Materials["G4_AIR"] = Nist("G4_AIR", 0.001205,
@@ -72,18 +77,19 @@ namespace Cad2Gdml.Materials
                 new KeyValuePair<string, double>("Cs", 0.5113),
                 new KeyValuePair<string, double>("I", 0.4887));
 
-            // Правила
-            lib.Rules.Add(new MaterialRule { Pattern = "crystal|nai|scint|кристалл", Material = "NaI" });
-            lib.Rules.Add(new MaterialRule { Pattern = "shell|housing|case|корпус|оболоч", Material = "G4_Al" });
-            lib.Rules.Add(new MaterialRule { Pattern = "water|вода|sample|проб", Material = "G4_WATER" });
-            lib.Rules.Add(new MaterialRule { Pattern = "lead|pb|свинец", Material = "G4_Pb" });
-            lib.Rules.Add(new MaterialRule { Pattern = "cu|copper|медь", Material = "G4_Cu" });
-            lib.Rules.Add(new MaterialRule { Pattern = "air|воздух", Material = "G4_AIR" });
+            // Правила — границы: альтернатива в начале или после небуквы
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(nai)", Material = "NaI", IsGuess = false });
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(crystal|кристалл|scint)", Material = "NaI", IsGuess = true });
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(shell|housing|case|корпус|оболоч)", Material = "G4_Al", IsGuess = false });
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(water|вода|sample|проб)", Material = "G4_WATER", IsGuess = false });
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(lead|pb|свинец)", Material = "G4_Pb", IsGuess = false });
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(cu|copper|медь)", Material = "G4_Cu", IsGuess = false });
+            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(air|воздух)", Material = "G4_AIR", IsGuess = false });
 
             return lib;
         }
 
-        // Поиск вещества по имени (регистронезависимо)
+        // Поиск вещества по имени (регистронезависимо), возвращает def с каноническим Name
         public MaterialDef Find(string name)
         {
             if (name == null) return null;
@@ -96,6 +102,7 @@ namespace Cad2Gdml.Materials
         // Назначение: первое совпавшее правило -> имя вещества, иначе null
         public string Resolve(string partName)
         {
+            LastResolveWasGuess = false;
             if (string.IsNullOrEmpty(partName)) return null;
             foreach (MaterialRule rule in Rules)
             {
@@ -103,7 +110,10 @@ namespace Cad2Gdml.Materials
                 try
                 {
                     if (Regex.IsMatch(partName, rule.Pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    {
+                        LastResolveWasGuess = rule.IsGuess;
                         return rule.Material;
+                    }
                 }
                 catch (ArgumentException)
                 {
@@ -113,18 +123,21 @@ namespace Cad2Gdml.Materials
             return null;
         }
 
-        // Загрузка из JSON (custom, stl_rules, stl_default)
+        // Загрузка из JSON (две схемы состава, валидация)
         public static MaterialLibrary LoadJson(string path)
         {
             string text = File.ReadAllText(path);
             object root = Cad2Gdml.Json.MiniJson.Parse(text);
+
             var dict = root as Dictionary<string, object>;
-            if (dict == null) return Default();
+            if (dict == null)
+                throw new InvalidDataException("E_MAT_ROOT: корень JSON не является объектом");
 
             var lib = new MaterialLibrary();
             lib.Materials = new Dictionary<string, MaterialDef>(StringComparer.OrdinalIgnoreCase);
             lib.Rules = new List<MaterialRule>();
             lib.DefaultMaterial = "G4_AIR";
+            lib.LastResolveWasGuess = false;
 
             // Ключ "custom"
             object customObj;
@@ -137,15 +150,33 @@ namespace Cad2Gdml.Materials
                     {
                         var matDict = kv.Value as Dictionary<string, object>;
                         if (matDict == null) continue;
-                        var def = new MaterialDef
-                        {
-                            Name = kv.Key,
-                            IsNist = false,
-                            MassFractions = new List<KeyValuePair<string, double>>()
-                        };
+
+                        // Плотность: "density" или "density_g_cm3"
+                        double density = 0.0;
+                        bool hasDensity = false;
+
                         object densObj;
                         if (matDict.TryGetValue("density", out densObj))
-                            def.DensityGcm3 = ToDouble(densObj);
+                        {
+                            density = ToDouble(densObj);
+                            hasDensity = true;
+                        }
+                        if (!hasDensity)
+                        {
+                            object densGObj;
+                            if (matDict.TryGetValue("density_g_cm3", out densGObj))
+                            {
+                                density = ToDouble(densGObj);
+                                hasDensity = true;
+                            }
+                        }
+
+                        if (!hasDensity || density <= 0.0)
+                            throw new InvalidDataException("E_MAT_DENSITY: некорректная плотность для '" + kv.Key + "'");
+
+                        // Состав: "elements" (dict) или "fractions" (list of [ref, frac])
+                        var fractions = new List<KeyValuePair<string, double>>();
+
                         object elemObj;
                         if (matDict.TryGetValue("elements", out elemObj))
                         {
@@ -154,11 +185,61 @@ namespace Cad2Gdml.Materials
                             {
                                 foreach (KeyValuePair<string, object> e in elems)
                                 {
-                                    def.MassFractions.Add(new KeyValuePair<string, double>(e.Key, ToDouble(e.Value)));
+                                    fractions.Add(new KeyValuePair<string, double>(e.Key, ToDouble(e.Value)));
                                 }
                             }
                         }
-                        lib.Materials[kv.Key] = def;
+
+                        if (fractions.Count == 0)
+                        {
+                            object fracObj;
+                            if (matDict.TryGetValue("fractions", out fracObj))
+                            {
+                                var fracList = fracObj as List<object>;
+                                if (fracList != null)
+                                {
+                                    foreach (object item in fracList)
+                                    {
+                                        var pair = item as List<object>;
+                                        if (pair == null || pair.Count < 2) continue;
+                                        string refName = pair[0] as string;
+                                        double fracVal = ToDouble(pair[1]);
+                                        if (refName != null)
+                                            fractions.Add(new KeyValuePair<string, double>(refName, fracVal));
+                                    }
+                                }
+                            }
+                        }
+
+                        if (fractions.Count == 0)
+                            throw new InvalidDataException("E_MAT_COMPO: пустой состав для '" + kv.Key + "'");
+
+                        // Нормализация долей: сумма ≈ 1 -> нормализуем, иначе ошибка
+                        double sum = 0.0;
+                        for (int i = 0; i < fractions.Count; i++)
+                            sum += fractions[i].Value;
+
+                        if (Math.Abs(sum - 1.0) <= 1e-3)
+                        {
+                            for (int i = 0; i < fractions.Count; i++)
+                            {
+                                double norm = fractions[i].Value / sum;
+                                fractions[i] = new KeyValuePair<string, double>(fractions[i].Key, norm);
+                            }
+                        }
+                        else
+                        {
+                            throw new InvalidDataException(
+                                "E_MAT_FRAC: сумма долей = " + sum.ToString("R", CultureInfo.InvariantCulture) + " для '" + kv.Key + "'");
+                        }
+
+                        lib.Materials[kv.Key] = new MaterialDef
+                        {
+                            Name = kv.Key,
+                            DensityGcm3 = density,
+                            MassFractions = fractions,
+                            IsNist = false
+                        };
                     }
                 }
             }
@@ -177,7 +258,7 @@ namespace Cad2Gdml.Materials
                         string pattern = pair[0] as string;
                         string material = pair[1] as string;
                         if (pattern != null && material != null)
-                            lib.Rules.Add(new MaterialRule { Pattern = pattern, Material = material });
+                            lib.Rules.Add(new MaterialRule { Pattern = pattern, Material = material, IsGuess = false });
                     }
                 }
             }
@@ -189,6 +270,13 @@ namespace Cad2Gdml.Materials
                 string defStr = defObj as string;
                 if (defStr != null)
                     lib.DefaultMaterial = defStr;
+            }
+
+            // Проверка: каждое правило ссылается на существующее вещество
+            foreach (MaterialRule rule in lib.Rules)
+            {
+                if (rule.Material != null && !lib.Materials.ContainsKey(rule.Material))
+                    throw new InvalidDataException("E_MAT_UNKNOWN: " + rule.Material);
             }
 
             return lib;

@@ -20,6 +20,8 @@ namespace Cad2Gdml.Import
             // Состояние текущей группы
             string currentName = fileName;
             List<int[]> currentFaces = new List<int[]>();
+            int totalFaceCount = 0;
+            int lineNo = 0;
 
             // Завершить текущую группу (пропуск пустых)
             void FinalizeCurrent()
@@ -76,41 +78,44 @@ namespace Cad2Gdml.Import
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
-                    line = line.TrimStart();
-                    if (line.Length == 0)
+                    lineNo++;
+                    string trimmed = line.TrimStart();
+                    if (trimmed.Length == 0)
                     {
                         continue;
                     }
-                    if (line[0] == '#')
+                    if (trimmed[0] == '#')
                     {
                         continue; // комментарий
                     }
 
                     // Извлечь тег и аргументы
-                    int spIdx = line.IndexOf(' ');
+                    int spIdx = trimmed.IndexOf(' ');
                     if (spIdx < 0)
                     {
-                        spIdx = line.IndexOf('\t');
+                        spIdx = trimmed.IndexOf('\t');
                     }
                     if (spIdx < 0)
                     {
                         continue; // тег без аргументов — не наш случай
                     }
 
-                    string tag = line.Substring(0, spIdx);
-                    string args = line.Substring(spIdx + 1).Trim();
+                    string tag = trimmed.Substring(0, spIdx);
+                    string args = trimmed.Substring(spIdx + 1).Trim();
 
                     if (tag == "v")
                     {
                         // Вершина: v x y z [w]
                         string[] tok = args.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (tok.Length >= 3)
+                        if (tok.Length < 3)
                         {
-                            double x = double.Parse(tok[0], CultureInfo.InvariantCulture) * unitToMm;
-                            double y = double.Parse(tok[1], CultureInfo.InvariantCulture) * unitToMm;
-                            double z = double.Parse(tok[2], CultureInfo.InvariantCulture) * unitToMm;
-                            globalVerts.Add(new Vec3d(x, y, z));
+                            throw new InvalidDataException("Строка " + lineNo + ": вершина требует минимум 3 координаты.");
                         }
+
+                        double x = ParseCoord(tok[0], lineNo) * unitToMm;
+                        double y = ParseCoord(tok[1], lineNo) * unitToMm;
+                        double z = ParseCoord(tok[2], lineNo) * unitToMm;
+                        globalVerts.Add(new Vec3d(x, y, z));
                     }
                     else if (tag == "o" || tag == "g")
                     {
@@ -124,7 +129,7 @@ namespace Cad2Gdml.Import
                         string[] tok = args.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                         if (tok.Length < 3)
                         {
-                            continue; // минимум три вершины
+                            throw new InvalidDataException("Строка " + lineNo + ": грань требует минимум 3 вершины.");
                         }
 
                         int vertCount = globalVerts.Count;
@@ -134,14 +139,24 @@ namespace Cad2Gdml.Import
                             // Номер вершины — часть до первого '/'
                             int slashPos = tok[pi].IndexOf('/');
                             string numStr = slashPos >= 0 ? tok[pi].Substring(0, slashPos) : tok[pi];
-                            int raw = int.Parse(numStr, CultureInfo.InvariantCulture);
+                            int raw = int.Parse(numStr, NumberStyles.Integer, CultureInfo.InvariantCulture);
                             if (raw > 0)
                             {
+                                if (raw > vertCount)
+                                {
+                                    throw new InvalidDataException(
+                                        "Строка " + lineNo + ": индекс " + raw + " вне диапазона 1.." + vertCount + ".");
+                                }
                                 vIdx[pi] = raw - 1;
                             }
                             else
                             {
-                                vIdx[pi] = vertCount + raw; // отрицательный — от конца
+                                if (raw < -vertCount)
+                                {
+                                    throw new InvalidDataException(
+                                        "Строка " + lineNo + ": относительный индекс " + raw + " вне диапазона -" + vertCount + "..-1.");
+                                }
+                                vIdx[pi] = vertCount + raw;
                             }
                         }
 
@@ -149,6 +164,7 @@ namespace Cad2Gdml.Import
                         for (int ti = 1; ti < tok.Length - 1; ti++)
                         {
                             currentFaces.Add(new int[] { vIdx[0], vIdx[ti], vIdx[ti + 1] });
+                            totalFaceCount++;
                         }
                     }
                     // vt, vn, usemtl, mtllib — игнорируем
@@ -158,7 +174,27 @@ namespace Cad2Gdml.Import
             // Последняя группа
             FinalizeCurrent();
 
+            if (totalFaceCount == 0)
+            {
+                throw new InvalidDataException("Файл не содержит ни одной грани.");
+            }
+
             return result;
+        }
+
+        // Разбор числа координаты; бросает InvalidDataException при ошибке
+        private static double ParseCoord(string s, int lineNo)
+        {
+            double val;
+            if (!double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
+            {
+                throw new InvalidDataException("Строка " + lineNo + ": некорректное число '" + s + "'.");
+            }
+            if (double.IsNaN(val) || double.IsInfinity(val))
+            {
+                throw new InvalidDataException("Строка " + lineNo + ": недопустимое значение '" + s + "'.");
+            }
+            return val;
         }
     }
 }

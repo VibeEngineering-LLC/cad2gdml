@@ -30,8 +30,28 @@ namespace Cad2Gdml.Gdml
         {
             string name = Transliterate(raw);
             if (string.IsNullOrEmpty(name)) name = "unnamed";
+
+            // Схлопываем повторяющиеся подчёркивания
+            while (name.IndexOf("__", StringComparison.Ordinal) >= 0)
+                name = name.Replace("__", "_");
+            name = name.Trim('_');
+            if (string.IsNullOrEmpty(name)) name = "unnamed";
+
+            // Префикс при цифре
             if (char.IsDigit(name[0])) name = "p" + name;
 
+            // Запрещаем "0x"
+            while (name.IndexOf("0x", StringComparison.Ordinal) >= 0)
+                name = name.Replace("0x", "0_x");
+
+            // Обрезка до 64
+            if (name.Length > 64) name = name.Substring(0, 64);
+            while (name.IndexOf("__", StringComparison.Ordinal) >= 0)
+                name = name.Replace("__", "_");
+            name = name.TrimEnd('_');
+            if (string.IsNullOrEmpty(name)) name = "unnamed";
+
+            // Уникальность
             if (!used.Contains(name))
             {
                 used.Add(name);
@@ -43,6 +63,7 @@ namespace Cad2Gdml.Gdml
             do
             {
                 candidate = name + "_" + i.ToString(CultureInfo.InvariantCulture);
+                if (candidate.Length > 64) candidate = candidate.Substring(0, 64);
                 i++;
             }
             while (used.Contains(candidate));
@@ -51,6 +72,7 @@ namespace Cad2Gdml.Gdml
             return candidate;
         }
 
+        // Транслитерация и очистка: только [A-Za-z0-9_]
         private static string Transliterate(string s)
         {
             if (s == null) return string.Empty;
@@ -62,7 +84,7 @@ namespace Cad2Gdml.Gdml
                 {
                     sb.Append(CyrToLatin(c));
                 }
-                else if (char.IsLetterOrDigit(c))
+                else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')
                 {
                     sb.Append(c);
                 }
@@ -79,7 +101,6 @@ namespace Cad2Gdml.Gdml
             if (c == '\u0401') return "Yo";
             if (c == '\u0451') return "yo";
 
-            // Заглавные А-Я
             if (c >= '\u0410' && c <= '\u042F')
             {
                 int idx = c - '\u0410';
@@ -90,7 +111,6 @@ namespace Cad2Gdml.Gdml
                 return idx < arr.Length ? arr[idx] : "";
             }
 
-            // Строчные а-я
             if (c >= '\u0430' && c <= '\u044F')
             {
                 int idx = c - '\u0430';
@@ -108,8 +128,9 @@ namespace Cad2Gdml.Gdml
     // Запись GDML-файла
     public static class GdmlWriter
     {
-        // Таблица элементов H..U: Z и A
+        // Таблица Z по символам
         private static readonly Dictionary<string, int> ElZ = BuildZ();
+        // Таблица A по символам
         private static readonly Dictionary<string, double> ElA = BuildA();
 
         private static Dictionary<string, int> BuildZ()
@@ -181,11 +202,12 @@ namespace Cad2Gdml.Gdml
         private static void Add(Dictionary<string, int> d, string k, int v) { d[k] = v; }
         private static void AddA(Dictionary<string, double> d, string k, double v) { d[k] = v; }
 
-        // Форматирование числа: InvariantCulture, до 9 значащих цифр, -0 -> 0
+        // Числовой формат: 6 знаков, InvariantCulture, без экспоненты, без хвостовых нулей, -0 -> 0
         private static string Fmt(double v)
         {
+            v = Math.Round(v, 6);
             if (v == 0.0) return "0";
-            return v.ToString("G9", CultureInfo.InvariantCulture);
+            return v.ToString("0.######", CultureInfo.InvariantCulture);
         }
 
         // XML-экранирование
@@ -196,87 +218,99 @@ namespace Cad2Gdml.Gdml
                     .Replace("\"", "&quot;").Replace("'", "&apos;");
         }
 
+        // Роль -> BecqMoni-строка
+        private static string RoleToBecq(PartRole r)
+        {
+            switch (r)
+            {
+                case PartRole.Crystal: return "crystal";
+                case PartRole.Source: return "source";
+                case PartRole.Container: return "vessel";
+                case PartRole.Shield: return "shield";
+                case PartRole.Housing: return "housing";
+                default: return "other";
+            }
+        }
+
         public static GdmlWriteResult Write(SceneModel scene, MaterialLibrary lib, string path)
         {
             var names = new HashSet<string>(StringComparer.Ordinal);
             var result = new GdmlWriteResult();
 
-            // Сборка списков
             int partCount = scene.Parts.Count;
             string[] volNames = new string[partCount];
             string[] solidNames = new string[partCount];
-            var neededMaterials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var neededElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string[] matNames = new string[partCount];
 
-            // Расчёт bbox сцены
-            Vec3d sceneMin, sceneMax;
-            bool hasBBox = false;
+            // Названия и проверка веществ
+            for (int pi = 0; pi < partCount; pi++)
             {
-                double mnX = double.MaxValue, mnY = double.MaxValue, mnZ = double.MaxValue;
-                double mxX = double.MinValue, mxY = double.MinValue, mxZ = double.MinValue;
-                for (int pi = 0; pi < partCount; pi++)
-                {
-                    Part p = scene.Parts[pi];
-                    if (p.Mesh == null || p.Mesh.Vertices.Count == 0) continue;
-                    Vec3d lo, hi;
-                    p.Mesh.GetBounds(out lo, out hi);
-                    if (lo.X < mnX) mnX = lo.X;
-                    if (lo.Y < mnY) mnY = lo.Y;
-                    if (lo.Z < mnZ) mnZ = lo.Z;
-                    if (hi.X > mxX) mxX = hi.X;
-                    if (hi.Y > mxY) mxY = hi.Y;
-                    if (hi.Z > mxZ) mxZ = hi.Z;
-                    hasBBox = true;
-                }
-                sceneMin = hasBBox ? new Vec3d(mnX, mnY, mnZ) : Vec3d.Zero;
-                sceneMax = hasBBox ? new Vec3d(mxX, mxY, mxZ) : Vec3d.Zero;
+                Part p = scene.Parts[pi];
+                string baseName = (p.Name != null && p.Name.Length > 0) ? p.Name : ("part" + pi.ToString(CultureInfo.InvariantCulture));
+
+                volNames[pi] = GdmlName.Make(baseName, names);
+                solidNames[pi] = volNames[pi] + "_s";
+                names.Add(solidNames[pi]);
+
+                // Вещество
+                string mat = p.Material;
+                if (string.IsNullOrEmpty(mat)) mat = lib.DefaultMaterial;
+                if (string.IsNullOrEmpty(mat))
+                    throw new InvalidDataException("E_MAT_UNKNOWN: " + baseName);
+
+                MaterialDef def = lib.Find(mat);
+                if (def == null)
+                    throw new InvalidDataException("E_MAT_UNKNOWN: " + mat);
+
+                // Используем каноническое имя из библиотеки
+                matNames[pi] = def.Name;
             }
 
-            // World-полуребро
-            double wHx = HalfExtent(sceneMin.X, sceneMax.X);
-            double wHy = HalfExtent(sceneMin.Y, sceneMax.Y);
-            double wHz = HalfExtent(sceneMin.Z, sceneMax.Z);
+            // World
+            string worldVolName = GdmlName.Make("World", names);
+            string worldSolidName = worldVolName + "_s";
+            names.Add(worldSolidName);
+
+            // Расчёт bbox сцены
+            double mnX = double.MaxValue, mnY = double.MaxValue, mnZ = double.MaxValue;
+            double mxX = double.MinValue, mxY = double.MinValue, mxZ = double.MinValue;
+            bool hasBBox = false;
+            for (int pi = 0; pi < partCount; pi++)
+            {
+                Part p = scene.Parts[pi];
+                if (p.Mesh == null || p.Mesh.Vertices.Count == 0) continue;
+                Vec3d lo, hi;
+                p.Mesh.GetBounds(out lo, out hi);
+                if (lo.X < mnX) mnX = lo.X;
+                if (lo.Y < mnY) mnY = lo.Y;
+                if (lo.Z < mnZ) mnZ = lo.Z;
+                if (hi.X > mxX) mxX = hi.X;
+                if (hi.Y > mxY) mxY = hi.Y;
+                if (hi.Z > mxZ) mxZ = hi.Z;
+                hasBBox = true;
+            }
+            if (!hasBBox) { mnX = 0; mnY = 0; mnZ = 0; mxX = 0; mxY = 0; mxZ = 0; }
+
+            double wHx = HalfExtent(mnX, mxX);
+            double wHy = HalfExtent(mnY, mxY);
+            double wHz = HalfExtent(mnZ, mxZ);
             double worldBoxX = 2.0 * wHx;
             double worldBoxY = 2.0 * wHy;
             double worldBoxZ = 2.0 * wHz;
 
-            // Названия
-            string worldVolName = GdmlName.Make("World", names);
-            string worldSolidName = GdmlName.Make("WorldBox", names);
-
-            for (int pi = 0; pi < partCount; pi++)
-            {
-                Part p = scene.Parts[pi];
-                string baseName = p.Name ?? ("part" + pi);
-                volNames[pi] = GdmlName.Make(baseName, names);
-                solidNames[pi] = GdmlName.Make(baseName, names);
-
-                // Вещество
-                string matName = p.Material;
-                if (string.IsNullOrEmpty(matName))
-                {
-                    matName = lib.DefaultMaterial;
-                }
-                if (!string.IsNullOrEmpty(matName))
-                {
-                    neededMaterials.Add(matName);
-                    MaterialDef def = lib.Find(matName);
-                    if (def != null && !def.IsNist)
-                    {
-                        for (int fi = 0; fi < def.MassFractions.Count; fi++)
-                        {
-                            neededElements.Add(def.MassFractions[fi].Key);
-                        }
-                    }
-                }
-            }
-
-            // Подсчёт видов
+            // Подсчёт видов и проверка пустых tessellated
             int tessCount = 0, triCount = 0, tubeCount = 0, polyCount = 0, boxCount = 0;
             for (int pi = 0; pi < partCount; pi++)
             {
                 Part p = scene.Parts[pi];
-                if (p.Shape != null)
+                bool isTess = (p.Shape == null || p.Shape.Kind == SolidKind.Tessellated);
+                if (isTess)
+                {
+                    if (p.Mesh == null || p.Mesh.TriangleCount == 0)
+                        throw new InvalidDataException("E_MESH_EMPTY: " + (p.Name ?? ("part" + pi.ToString(CultureInfo.InvariantCulture))));
+                    tessCount++;
+                }
+                else
                 {
                     switch (p.Shape.Kind)
                     {
@@ -286,41 +320,39 @@ namespace Cad2Gdml.Gdml
                         default: tessCount++; break;
                     }
                 }
-                else
-                {
-                    tessCount++;
-                }
-                if (p.Mesh != null)
-                {
-                    triCount += p.Mesh.TriangleCount;
-                }
+                if (p.Mesh != null) triCount += p.Mesh.TriangleCount;
             }
 
-            result.Volumes = partCount + 1; // + World
+            result.Volumes = partCount + 1;
             result.Tessellated = tessCount;
             result.Triangles = triCount;
             result.Tubes = tubeCount;
             result.Polycones = polyCount;
             result.Boxes = boxCount;
 
-            // Построение XML
+            // Сборка XML
             var xml = new StringBuilder();
             xml.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
             xml.AppendLine("<gdml xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:noNamespaceSchemaLocation=\"http://cern.ch/service/geo/gdml/gdml.xsd\">");
 
-            // <define>
+            // --- <define>: вершины только tessellated ---
             xml.AppendLine("  <define>");
             for (int pi = 0; pi < partCount; pi++)
             {
                 Part p = scene.Parts[pi];
                 bool isTess = (p.Shape == null || p.Shape.Kind == SolidKind.Tessellated);
                 if (!isTess) continue;
-                if (p.Mesh == null || p.Mesh.Vertices.Count == 0) continue;
+                if (p.Mesh == null) continue;
 
-                for (int vi = 0; vi < p.Mesh.Vertices.Count; vi++)
+                // Собираем индексы используемых вершин
+                var usedVerts = new HashSet<int>();
+                for (int ii = 0; ii < p.Mesh.Indices.Count; ii++)
+                    usedVerts.Add(p.Mesh.Indices[ii]);
+
+                foreach (int vi in SortInts(usedVerts))
                 {
                     Vec3d v = p.Mesh.Vertices[vi];
-                    string vname = "v" + pi + "_" + vi;
+                    string vname = "v" + pi.ToString(CultureInfo.InvariantCulture) + "_" + vi.ToString(CultureInfo.InvariantCulture);
                     xml.Append("    <position name=\"").Append(XmlEsc(vname)).Append("\" x=\"")
                        .Append(Fmt(v.X)).Append("\" y=\"")
                        .Append(Fmt(v.Y)).Append("\" z=\"")
@@ -330,32 +362,46 @@ namespace Cad2Gdml.Gdml
             }
             xml.AppendLine("  </define>");
 
-            // <materials>
+            // --- <materials> ---
             xml.AppendLine("  <materials>");
 
-            // Элементы
-            foreach (string elem in SortStrings(neededElements))
+            // Элементы из custom-веществ
+            var neededElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string matName in matNames)
             {
-                int z; double a;
-                if (ElZ.TryGetValue(elem, out z) && ElA.TryGetValue(elem, out a))
+                MaterialDef def = lib.Find(matName);
+                if (def == null || def.IsNist) continue;
+                if (def.MassFractions != null)
                 {
-                    xml.Append("    <element name=\"").Append(XmlEsc(elem)).Append("\" Z=\"")
-                       .Append(z.ToString(CultureInfo.InvariantCulture)).Append("\" A=\"")
-                       .Append(Fmt(a)).Append("\"/>");
-                    xml.AppendLine();
-                }
-                else
-                {
-                    // Неизвестный элемент — пропускаем
+                    for (int fi = 0; fi < def.MassFractions.Count; fi++)
+                        neededElements.Add(def.MassFractions[fi].Key);
                 }
             }
 
+            foreach (string elem in SortStrings(neededElements))
+            {
+                int z; double a;
+                if (!ElZ.TryGetValue(elem, out z))
+                    throw new InvalidDataException("E_ELEMENT_UNKNOWN: " + elem);
+                if (!ElA.TryGetValue(elem, out a))
+                    throw new InvalidDataException("E_ELEMENT_UNKNOWN: " + elem);
+
+                xml.Append("    <element name=\"").Append(XmlEsc(elem))
+                   .Append("\" formula=\"").Append(XmlEsc(elem))
+                   .Append("\" Z=\"").Append(z.ToString(CultureInfo.InvariantCulture))
+                   .Append("\"><atom value=\"").Append(Fmt(a)).Append("\"/></element>");
+                xml.AppendLine();
+            }
+
             // Вещества (только non-NIST)
-            foreach (string matName in SortStrings(neededMaterials))
+            var writtenMats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string matName in SortStrings(new HashSet<string>(matNames, StringComparer.OrdinalIgnoreCase)))
             {
                 MaterialDef def = lib.Find(matName);
                 if (def == null) continue;
-                if (def.IsNist) continue; // NIST — только по ссылке
+                if (def.IsNist) continue;
+                if (writtenMats.Contains(def.Name)) continue;
+                writtenMats.Add(def.Name);
 
                 xml.Append("    <material name=\"").Append(XmlEsc(def.Name)).Append("\" state=\"solid\">");
                 xml.AppendLine();
@@ -365,26 +411,25 @@ namespace Cad2Gdml.Gdml
                 {
                     for (int fi = 0; fi < def.MassFractions.Count; fi++)
                     {
-                        string elemSym = def.MassFractions[fi].Key;
+                        string sym = def.MassFractions[fi].Key;
                         double frac = def.MassFractions[fi].Value;
-                        xml.Append("      <fraction n=\"").Append(Fmt(frac)).Append("\" ref=\"")
-                           .Append(XmlEsc(elemSym)).Append("\"/>");
+                        xml.Append("      <fraction n=\"").Append(Fmt(frac))
+                           .Append("\" ref=\"").Append(XmlEsc(sym)).Append("\"/>");
                         xml.AppendLine();
                     }
                 }
                 xml.AppendLine("    </material>");
             }
-
             xml.AppendLine("  </materials>");
 
-            // <solids>
+            // --- <solids> ---
             xml.AppendLine("  <solids>");
 
             // World box
-            xml.Append("    <box name=\"").Append(XmlEsc(worldSolidName)).Append("\" x=\"")
-               .Append(Fmt(worldBoxX)).Append("\" y=\"")
-               .Append(Fmt(worldBoxY)).Append("\" z=\"")
-               .Append(Fmt(worldBoxZ)).Append("\"/>");
+            xml.Append("    <box name=\"").Append(XmlEsc(worldSolidName))
+               .Append("\" x=\"").Append(Fmt(worldBoxX))
+               .Append("\" y=\"").Append(Fmt(worldBoxY))
+               .Append("\" z=\"").Append(Fmt(worldBoxZ)).Append("\"/>");
             xml.AppendLine();
 
             for (int pi = 0; pi < partCount; pi++)
@@ -397,26 +442,29 @@ namespace Cad2Gdml.Gdml
                     switch (p.Shape.Kind)
                     {
                         case SolidKind.Box:
-                            xml.Append("    <box name=\"").Append(XmlEsc(sname)).Append("\" x=\"")
-                               .Append(Fmt(p.Shape.BoxX)).Append("\" y=\"")
-                               .Append(Fmt(p.Shape.BoxY)).Append("\" z=\"")
-                               .Append(Fmt(p.Shape.BoxZ)).Append("\"/>");
+                            xml.Append("    <box name=\"").Append(XmlEsc(sname))
+                               .Append("\" x=\"").Append(Fmt(p.Shape.BoxX))
+                               .Append("\" y=\"").Append(Fmt(p.Shape.BoxY))
+                               .Append("\" z=\"").Append(Fmt(p.Shape.BoxZ)).Append("\"/>");
                             xml.AppendLine();
                             break;
 
                         case SolidKind.Tube:
-                            double tubeZ = p.Shape.Z1 - p.Shape.Z0;
-                            xml.Append("    <tube name=\"").Append(XmlEsc(sname)).Append("\" aunit=\"rad\" lunit=\"mm\" rmin=\"")
-                               .Append(Fmt(p.Shape.RMin)).Append("\" rmax=\"")
-                               .Append(Fmt(p.Shape.RMax)).Append("\" z=\"")
-                               .Append(Fmt(tubeZ)).Append("\" startphi=\"0\" deltaphi=\"")
-                               .Append(Fmt(2.0 * Math.PI)).Append("\"/>");
-                            xml.AppendLine();
+                            {
+                                double tubeZ = p.Shape.Z1 - p.Shape.Z0;
+                                xml.Append("    <tube name=\"").Append(XmlEsc(sname))
+                                   .Append("\" aunit=\"deg\" lunit=\"mm\" rmin=\"")
+                                   .Append(Fmt(p.Shape.RMin)).Append("\" rmax=\"")
+                                   .Append(Fmt(p.Shape.RMax)).Append("\" z=\"")
+                                   .Append(Fmt(tubeZ))
+                                   .Append("\" startphi=\"0\" deltaphi=\"360\"/>");
+                                xml.AppendLine();
+                            }
                             break;
 
                         case SolidKind.Polycone:
-                            xml.Append("    <polycone name=\"").Append(XmlEsc(sname)).Append("\" aunit=\"rad\" lunit=\"mm\" startphi=\"0\" deltaphi=\"")
-                               .Append(Fmt(2.0 * Math.PI)).Append("\">");
+                            xml.Append("    <polycone name=\"").Append(XmlEsc(sname))
+                               .Append("\" aunit=\"deg\" lunit=\"mm\" startphi=\"0\" deltaphi=\"360\">");
                             xml.AppendLine();
                             if (p.Shape.ZPlane != null)
                             {
@@ -425,9 +473,9 @@ namespace Cad2Gdml.Gdml
                                 {
                                     double zr = (zi < p.Shape.RInner.Count) ? p.Shape.RInner[zi] : 0.0;
                                     double zo = (zi < p.Shape.ROuter.Count) ? p.Shape.ROuter[zi] : 0.0;
-                                    xml.Append("      <zplane rmin=\"").Append(Fmt(zr)).Append("\" rmax=\"")
-                                       .Append(Fmt(zo)).Append("\" z=\"")
-                                       .Append(Fmt(p.Shape.ZPlane[zi])).Append("\"/>");
+                                    xml.Append("      <zplane rmin=\"").Append(Fmt(zr))
+                                       .Append("\" rmax=\"").Append(Fmt(zo))
+                                       .Append("\" z=\"").Append(Fmt(p.Shape.ZPlane[zi])).Append("\"/>");
                                     xml.AppendLine();
                                 }
                             }
@@ -436,100 +484,96 @@ namespace Cad2Gdml.Gdml
 
                         case SolidKind.Tessellated:
                         default:
-                            // Tessellated
-                            xml.Append("    <tessellated name=\"").Append(XmlEsc(sname)).Append("\">");
-                            xml.AppendLine();
-                            if (p.Mesh != null)
-                            {
-                                int triN = p.Mesh.TriangleCount;
-                                for (int ti = 0; ti < triN; ti++)
-                                {
-                                    Vec3d a, b, c;
-                                    p.Mesh.GetTriangle(ti, out a, out b, out c);
-                                    int i0 = p.Mesh.Indices[ti * 3];
-                                    int i1 = p.Mesh.Indices[ti * 3 + 1];
-                                    int i2 = p.Mesh.Indices[ti * 3 + 2];
-                                    xml.Append("      <triangular vertex1=\"v")
-                                       .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
-                                       .Append(i0.ToString(CultureInfo.InvariantCulture))
-                                       .Append("\" vertex2=\"v")
-                                       .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
-                                       .Append(i1.ToString(CultureInfo.InvariantCulture))
-                                       .Append("\" vertex3=\"v")
-                                       .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
-                                       .Append(i2.ToString(CultureInfo.InvariantCulture))
-                                       .Append("\" type=\"ABSOLUTE\"/>");
-                                    xml.AppendLine();
-                                }
-                            }
-                            xml.AppendLine("    </tessellated>");
+                            WriteTessellated(xml, sname, p, pi);
                             break;
                     }
                 }
                 else
                 {
-                    // Нет Shape — tessellated по сетке
-                    xml.Append("    <tessellated name=\"").Append(XmlEsc(sname)).Append("\">");
-                    xml.AppendLine();
-                    if (p.Mesh != null)
-                    {
-                        int triN = p.Mesh.TriangleCount;
-                        for (int ti = 0; ti < triN; ti++)
-                        {
-                            int i0 = p.Mesh.Indices[ti * 3];
-                            int i1 = p.Mesh.Indices[ti * 3 + 1];
-                            int i2 = p.Mesh.Indices[ti * 3 + 2];
-                            xml.Append("      <triangular vertex1=\"v")
-                               .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
-                               .Append(i0.ToString(CultureInfo.InvariantCulture))
-                               .Append("\" vertex2=\"v")
-                               .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
-                               .Append(i1.ToString(CultureInfo.InvariantCulture))
-                               .Append("\" vertex3=\"v")
-                               .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
-                               .Append(i2.ToString(CultureInfo.InvariantCulture))
-                               .Append("\" type=\"ABSOLUTE\"/>");
-                            xml.AppendLine();
-                        }
-                    }
-                    xml.AppendLine("    </tessellated>");
+                    WriteTessellated(xml, sname, p, pi);
                 }
             }
-
             xml.AppendLine("  </solids>");
 
-            // <structure>
+            // --- <structure> ---
             xml.AppendLine("  <structure>");
 
             for (int pi = 0; pi < partCount; pi++)
             {
                 Part p = scene.Parts[pi];
-                string matName = p.Material;
-                if (string.IsNullOrEmpty(matName)) matName = lib.DefaultMaterial;
 
-                xml.Append("    <volume name=\"").Append(XmlEsc(volNames[pi]))
-                   .Append("\" materialref=\"").Append(XmlEsc(matName))
-                   .Append("\" solidref=\"").Append(XmlEsc(solidNames[pi])).Append("\">");
+                xml.Append("    <volume name=\"").Append(XmlEsc(volNames[pi])).Append("\">");
+                xml.AppendLine();
+                xml.Append("      <materialref ref=\"").Append(XmlEsc(matNames[pi])).Append("\"/>");
+                xml.AppendLine();
+                xml.Append("      <solidref ref=\"").Append(XmlEsc(solidNames[pi])).Append("\"/>");
+                xml.AppendLine();
+                xml.Append("      <auxiliary auxtype=\"BecqMoni:Role\" auxvalue=\"")
+                   .Append(RoleToBecq(p.Role)).Append("\"/>");
                 xml.AppendLine();
                 xml.Append("      <auxiliary auxtype=\"Cad2Gdml:Role\" auxvalue=\"")
-                   .Append(XmlEsc(p.Role.ToString())).Append("\"/>");
+                   .Append(p.Role.ToString()).Append("\"/>");
                 xml.AppendLine();
                 xml.AppendLine("    </volume>");
             }
 
-            // World volume
-            xml.Append("    <volume name=\"").Append(XmlEsc(worldVolName))
-               .Append("\" materialref=\"G4_AIR\" solidref=\"").Append(XmlEsc(worldSolidName)).Append("\">");
+            // World volume с physvol
+            xml.Append("    <volume name=\"").Append(XmlEsc(worldVolName)).Append("\">");
             xml.AppendLine();
+            xml.Append("      <materialref ref=\"G4_AIR\"/>");
+            xml.AppendLine();
+            xml.Append("      <solidref ref=\"").Append(XmlEsc(worldSolidName)).Append("\"/>");
+            xml.AppendLine();
+
             for (int pi = 0; pi < partCount; pi++)
             {
-                xml.Append("      <physvol ref=\"").Append(XmlEsc(volNames[pi])).Append("\"/>");
+                Part p = scene.Parts[pi];
+                string pvName = "PV_" + volNames[pi];
+                string posName = "pos_" + volNames[pi];
+
+                xml.Append("      <physvol name=\"").Append(XmlEsc(pvName)).Append("\">");
                 xml.AppendLine();
+                xml.Append("        <volumeref ref=\"").Append(XmlEsc(volNames[pi])).Append("\"/>");
+                xml.AppendLine();
+
+                // Позиция по типу
+                double px = 0.0, py = 0.0, pz = 0.0;
+                if (p.Shape != null)
+                {
+                    switch (p.Shape.Kind)
+                    {
+                        case SolidKind.Tube:
+                            px = p.Shape.X0;
+                            py = p.Shape.Y0;
+                            pz = (p.Shape.Z0 + p.Shape.Z1) / 2.0;
+                            break;
+                        case SolidKind.Box:
+                            px = p.Shape.X0;
+                            py = p.Shape.Y0;
+                            pz = p.Shape.Z0;
+                            break;
+                        case SolidKind.Polycone:
+                            px = p.Shape.X0;
+                            py = p.Shape.Y0;
+                            pz = 0.0;
+                            break;
+                        default:
+                            px = 0.0; py = 0.0; pz = 0.0;
+                            break;
+                    }
+                }
+
+                xml.Append("        <position name=\"").Append(XmlEsc(posName))
+                   .Append("\" unit=\"mm\" x=\"").Append(Fmt(px))
+                   .Append("\" y=\"").Append(Fmt(py))
+                   .Append("\" z=\"").Append(Fmt(pz)).Append("\"/>");
+                xml.AppendLine();
+                xml.AppendLine("      </physvol>");
             }
             xml.AppendLine("    </volume>");
             xml.AppendLine("  </structure>");
 
-            // <setup>
+            // --- <setup> ---
             xml.AppendLine("  <setup name=\"Default\" version=\"1.0\">");
             xml.Append("    <world ref=\"").Append(XmlEsc(worldVolName)).Append("\"/>");
             xml.AppendLine();
@@ -537,8 +581,9 @@ namespace Cad2Gdml.Gdml
 
             xml.AppendLine("</gdml>");
 
-            // Запись файла: UTF-8 без BOM, LF
-            byte[] bytes = Encoding.UTF8.GetBytes(xml.ToString().Replace("\r\n", "\n").Replace("\r", "\n"));
+            // Запись: UTF-8 без BOM, LF
+            string text = xml.ToString().Replace("\r\n", "\n").Replace("\r", "\n");
+            byte[] bytes = Encoding.UTF8.GetBytes(text);
             File.WriteAllBytes(path, bytes);
 
             // SHA256
@@ -547,16 +592,46 @@ namespace Cad2Gdml.Gdml
                 byte[] hash = sha.ComputeHash(bytes);
                 var hex = new StringBuilder(hash.Length * 2);
                 for (int i = 0; i < hash.Length; i++)
-                {
                     hex.Append(hash[i].ToString("x2", CultureInfo.InvariantCulture));
-                }
                 result.Sha256 = hex.ToString();
             }
 
             return result;
         }
 
-        // Полуребро с маржином
+        // Запись tessellated-твёрдого
+        private static void WriteTessellated(StringBuilder xml, string sname, Part p, int pi)
+        {
+            if (p.Mesh == null || p.Mesh.TriangleCount == 0)
+            {
+                string nm = p.Name ?? ("part" + pi.ToString(CultureInfo.InvariantCulture));
+                throw new InvalidDataException("E_MESH_EMPTY: " + nm);
+            }
+
+            xml.Append("    <tessellated name=\"").Append(XmlEsc(sname)).Append("\">");
+            xml.AppendLine();
+            int triN = p.Mesh.TriangleCount;
+            for (int ti = 0; ti < triN; ti++)
+            {
+                int i0 = p.Mesh.Indices[ti * 3];
+                int i1 = p.Mesh.Indices[ti * 3 + 1];
+                int i2 = p.Mesh.Indices[ti * 3 + 2];
+                xml.Append("      <triangular vertex1=\"v")
+                   .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
+                   .Append(i0.ToString(CultureInfo.InvariantCulture))
+                   .Append("\" vertex2=\"v")
+                   .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
+                   .Append(i1.ToString(CultureInfo.InvariantCulture))
+                   .Append("\" vertex3=\"v")
+                   .Append(pi.ToString(CultureInfo.InvariantCulture)).Append("_")
+                   .Append(i2.ToString(CultureInfo.InvariantCulture))
+                   .Append("\" type=\"ABSOLUTE\"/>");
+                xml.AppendLine();
+            }
+            xml.AppendLine("    </tessellated>");
+        }
+
+        // Полуребро World: max(|lo|,|hi|) + max(10, 10%)
         private static double HalfExtent(double lo, double hi)
         {
             double m = Math.Max(Math.Abs(lo), Math.Abs(hi));
@@ -564,11 +639,19 @@ namespace Cad2Gdml.Gdml
             return m + margin;
         }
 
-        // Сортировка строк для детерминизма
+        // Сортировка строк
         private static List<string> SortStrings(HashSet<string> set)
         {
             var list = new List<string>(set);
             list.Sort(StringComparer.Ordinal);
+            return list;
+        }
+
+        // Сортировка int-ов
+        private static List<int> SortInts(HashSet<int> set)
+        {
+            var list = new List<int>(set);
+            list.Sort();
             return list;
         }
     }

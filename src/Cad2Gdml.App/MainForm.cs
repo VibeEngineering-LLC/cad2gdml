@@ -35,6 +35,8 @@ namespace Cad2Gdml.App
         private TextBox _txtOutDir;
         private Button _btnBrowseOut;
         private Button _btnConvert;
+        private CheckBox _chkAllowDefault;
+        private CheckBox _chkDropOpen;
 
         // Левый список, картинка, отчёт, статус
         private ListBox _lstInputs;
@@ -105,6 +107,19 @@ namespace Cad2Gdml.App
             _btnConvert.Font = new Font(this.Font, FontStyle.Bold);
             _btnConvert.Click += OnConvert;
 
+            // Чекбоксы второго ряда
+            _chkAllowDefault = new CheckBox();
+            _chkAllowDefault.Text = "Разрешить вещество по умолчанию";
+            _chkAllowDefault.Checked = false;
+            _chkAllowDefault.Location = new Point(146, 38);
+            _chkAllowDefault.AutoSize = true;
+
+            _chkDropOpen = new CheckBox();
+            _chkDropOpen.Text = "Пропускать открытые детали";
+            _chkDropOpen.Checked = false;
+            _chkDropOpen.Location = new Point(400, 38);
+            _chkDropOpen.AutoSize = true;
+
             topPanel.Controls.Add(_btnAddFiles);
             topPanel.Controls.Add(_btnAddFolder);
             topPanel.Controls.Add(_cmbUnit);
@@ -113,6 +128,8 @@ namespace Cad2Gdml.App
             topPanel.Controls.Add(_txtOutDir);
             topPanel.Controls.Add(_btnBrowseOut);
             topPanel.Controls.Add(_btnConvert);
+            topPanel.Controls.Add(_chkAllowDefault);
+            topPanel.Controls.Add(_chkDropOpen);
 
             // --- Левая панель: список входов ---
             var leftPanel = new Panel();
@@ -228,7 +245,7 @@ namespace Cad2Gdml.App
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
                     _lastFolder = dlg.SelectedPath;
-                    // Перечисляем поддерживаемые файлы
+                    // Добавляем только поддерживаемые файлы
                     string dir = dlg.SelectedPath;
                     foreach (string file in SafeGetFiles(dir))
                     {
@@ -261,6 +278,14 @@ namespace Cad2Gdml.App
                 return;
             }
 
+            // Папка вывода обязательна
+            string outDir = _txtOutDir.Text.Trim();
+            if (string.IsNullOrEmpty(outDir))
+            {
+                SetStatus("Укажите папку вывода.", false);
+                return;
+            }
+
             // Собираем список входов (если папка — расширяем)
             var inputs = new List<string>();
             foreach (string item in _lstInputs.Items)
@@ -284,12 +309,14 @@ namespace Cad2Gdml.App
 
             var opts = new PipelineOptions();
             opts.Inputs = inputs;
-            opts.OutDir = _txtOutDir.Text.Trim();
+            opts.OutDir = outDir;
             opts.UnitToMm = GetUnitToMm();
             opts.UnitName = _cmbUnit.SelectedItem.ToString();
             opts.CrystalName = _txtCrystal.Text.Trim();
             opts.FrontSign = _cmbFront.SelectedItem.ToString();
-            opts.AllowDefaultMaterial = true;
+            opts.AllowDefaultMaterial = _chkAllowDefault.Checked;
+            opts.DropOpen = _chkDropOpen.Checked;
+            // BaseName оставляем пустым — конвейер выведёт из первого входа
 
             SetControlsEnabled(false);
             SetStatus("Конвертация…", true);
@@ -332,14 +359,15 @@ namespace Cad2Gdml.App
 
             SetStatus("Готово → " + result.GdmlPath, true);
 
-            // Показ картинки
+            // Показ картинки через MemoryStream, чтобы не блокировать файл
             if (!string.IsNullOrEmpty(result.PngPath) && File.Exists(result.PngPath))
             {
                 try
                 {
                     if (_picSketch.Image != null)
                         _picSketch.Image.Dispose();
-                    _picSketch.Image = Image.FromFile(result.PngPath);
+                    var ms = new MemoryStream(File.ReadAllBytes(result.PngPath));
+                    _picSketch.Image = new Bitmap(ms);
                 }
                 catch
                 {
@@ -420,6 +448,8 @@ namespace Cad2Gdml.App
             _txtOutDir.Enabled = en;
             _btnBrowseOut.Enabled = en;
             _btnConvert.Enabled = en;
+            _chkAllowDefault.Enabled = en;
+            _chkDropOpen.Enabled = en;
             _lstInputs.Enabled = en;
         }
 
@@ -430,12 +460,22 @@ namespace Cad2Gdml.App
             _lblStatus.ForeColor = ok ? Color.Black : Color.Red;
         }
 
-        // Безопасное перечисление файлов
+        // Безопасное перечисление только *.stl, *.obj, *.3mf (без учёта регистра)
         private static string[] SafeGetFiles(string dir)
         {
             try
             {
-                return Directory.GetFiles(dir);
+                var all = Directory.GetFiles(dir);
+                var result = new List<string>();
+                foreach (string f in all)
+                {
+                    string ext = Path.GetExtension(f);
+                    if (ext == null) continue;
+                    ext = ext.ToLowerInvariant();
+                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf")
+                        result.Add(f);
+                }
+                return result.ToArray();
             }
             catch
             {

@@ -13,26 +13,71 @@ namespace Cad2Gdml.Import
     // Импортёр 3MF
     public static class ThreeMfImporter
     {
+        // Безопасный разбор числа: запятая = ошибка, NaN/Inf = ошибка
+        private static double SafeParse(string s, string ctx)
+        {
+            if (s == null)
+            {
+                throw new InvalidDataException("3MF: bad number (null) " + ctx);
+            }
+            double v;
+            try
+            {
+                v = double.Parse(s, NumberStyles.Float, CultureInfo.InvariantCulture);
+            }
+            catch (FormatException)
+            {
+                throw new InvalidDataException("3MF: bad number '" + s + "' " + ctx);
+            }
+            catch (OverflowException)
+            {
+                throw new InvalidDataException("3MF: bad number '" + s + "' " + ctx);
+            }
+            if (double.IsNaN(v) || double.IsInfinity(v))
+            {
+                throw new InvalidDataException("3MF: bad number '" + s + "' " + ctx);
+            }
+            return v;
+        }
+
         // Загрузка 3MF файла
         public static IList<Part> Load(string path, double unitOverrideToMm)
         {
             List<Part> parts = new List<Part>();
 
-            using (ZipArchive zip = ZipFile.OpenRead(path))
+            // Не-ZIP или отсутствующий файл -> InvalidDataException
+            ZipArchive zip;
+            try
             {
-                // Определяем путь модели внутри ZIP
+                zip = ZipFile.OpenRead(path);
+            }
+            catch (InvalidDataException)
+            {
+                throw new InvalidDataException("3MF: not a valid ZIP archive: " + path);
+            }
+            catch (FileNotFoundException)
+            {
+                throw new InvalidDataException("3MF: file not found: " + path);
+            }
+            catch (IOException ex)
+            {
+                throw new InvalidDataException("3MF: I/O error opening archive: " + path, ex);
+            }
+
+            using (zip)
+            {
                 string modelPath = FindModelPath(zip);
                 ZipArchiveEntry entry = zip.GetEntry(modelPath);
                 if (entry == null)
                 {
-                    throw new FileNotFoundException("Модель не найдена в 3MF: " + modelPath, path);
+                    throw new InvalidDataException("3MF: model part missing: " + modelPath);
                 }
 
                 using (Stream s = entry.Open())
                 {
                     XDocument doc = XDocument.Load(s);
 
-                    // Определяем множитель единиц на мм
+                    // Множитель единиц -> мм
                     double unitToMm;
                     if (unitOverrideToMm > 0.0)
                     {
@@ -49,13 +94,15 @@ namespace Cad2Gdml.Import
                         unitToMm = ParseUnit(unitStr);
                     }
 
-                    // Собираем словарь объектов
                     Dictionary<string, XElement> objects = ParseObjects(doc);
-
-                    // Собираем build items
                     List<XElement> buildItems = GetBuildItems(doc);
 
-                    // Счётчики повторов имён
+                    // Пустая модель — ошибка
+                    if (buildItems.Count == 0)
+                    {
+                        throw new InvalidDataException("3MF: empty model (no build items)");
+                    }
+
                     Dictionary<string, int> nameCounters = new Dictionary<string, int>();
 
                     for (int i = 0; i < buildItems.Count; i++)
@@ -76,7 +123,6 @@ namespace Cad2Gdml.Import
                             continue;
                         }
 
-                        // Формируем имя детали
                         string baseName = GetAttr(objEl, "name");
                         if (string.IsNullOrEmpty(baseName))
                         {
@@ -96,8 +142,7 @@ namespace Cad2Gdml.Import
                             nameCounters[baseName] = 1;
                         }
 
-                        // Рекурсивно разрешаем объект в меш
-                        Mesh mesh = ResolveObject(objects, objectId, itemTf, 0);
+                        Mesh mesh = ResolveObject(objects, objectId, itemTf, 0, unitToMm);
 
                         Part part = new Part();
                         part.Name = finalName;
@@ -116,13 +161,11 @@ namespace Cad2Gdml.Import
         // Поиск пути модели в ZIP-архиве
         private static string FindModelPath(ZipArchive zip)
         {
-            // Стандартный путь
             if (zip.GetEntry("3D/3dmodel.model") != null)
             {
                 return "3D/3dmodel.model";
             }
 
-            // Читаем _rels/.rels
             ZipArchiveEntry relsEntry = zip.GetEntry("_rels/.rels");
             if (relsEntry != null)
             {
@@ -152,11 +195,10 @@ namespace Cad2Gdml.Import
                 }
             }
 
-            // Возврат к стандартному пути
             return "3D/3dmodel.model";
         }
 
-        // Поиск прямого дочернего элемента по локальному имени
+        // Поиск прямого дочернего элемента
         private static XElement FindElement(XElement parent, string localName)
         {
             if (parent == null)
@@ -188,7 +230,7 @@ namespace Cad2Gdml.Import
             return attr.Value;
         }
 
-        // Разбор единицы измерения -> мм
+        // Единица -> мм
         private static double ParseUnit(string unit)
         {
             if (string.IsNullOrEmpty(unit))
@@ -223,7 +265,7 @@ namespace Cad2Gdml.Import
             return 1.0;
         }
 
-        // Сборка словаря объектов из секции ресурсов
+        // Словарь объектов из <resources>
         private static Dictionary<string, XElement> ParseObjects(XDocument doc)
         {
             Dictionary<string, XElement> objects = new Dictionary<string, XElement>();
@@ -233,7 +275,6 @@ namespace Cad2Gdml.Import
                 {
                     continue;
                 }
-                // Убеждаемся, что родитель — <resources>
                 if (el.Parent == null || el.Parent.Name.LocalName != "resources")
                 {
                     continue;
@@ -248,7 +289,7 @@ namespace Cad2Gdml.Import
             return objects;
         }
 
-        // Сборка списка build items
+        // Список build items
         private static List<XElement> GetBuildItems(XDocument doc)
         {
             List<XElement> items = new List<XElement>();
@@ -267,7 +308,7 @@ namespace Cad2Gdml.Import
             return items;
         }
 
-        // Разбор строки трансформации (row-vector, 12 чисел)
+        // Разбор строки трансформации (12 чисел, row-vector)
         private static Affine3 ParseTransform(string s)
         {
             if (string.IsNullOrEmpty(s))
@@ -281,18 +322,18 @@ namespace Cad2Gdml.Import
                 return Affine3.Identity;
             }
 
-            double m00 = double.Parse(parts[0], CultureInfo.InvariantCulture);
-            double m01 = double.Parse(parts[1], CultureInfo.InvariantCulture);
-            double m02 = double.Parse(parts[2], CultureInfo.InvariantCulture);
-            double m10 = double.Parse(parts[3], CultureInfo.InvariantCulture);
-            double m11 = double.Parse(parts[4], CultureInfo.InvariantCulture);
-            double m12 = double.Parse(parts[5], CultureInfo.InvariantCulture);
-            double m20 = double.Parse(parts[6], CultureInfo.InvariantCulture);
-            double m21 = double.Parse(parts[7], CultureInfo.InvariantCulture);
-            double m22 = double.Parse(parts[8], CultureInfo.InvariantCulture);
-            double m30 = double.Parse(parts[9], CultureInfo.InvariantCulture);
-            double m31 = double.Parse(parts[10], CultureInfo.InvariantCulture);
-            double m32 = double.Parse(parts[11], CultureInfo.InvariantCulture);
+            double m00 = SafeParse(parts[0], "transform[0]");
+            double m01 = SafeParse(parts[1], "transform[1]");
+            double m02 = SafeParse(parts[2], "transform[2]");
+            double m10 = SafeParse(parts[3], "transform[3]");
+            double m11 = SafeParse(parts[4], "transform[4]");
+            double m12 = SafeParse(parts[5], "transform[5]");
+            double m20 = SafeParse(parts[6], "transform[6]");
+            double m21 = SafeParse(parts[7], "transform[7]");
+            double m22 = SafeParse(parts[8], "transform[8]");
+            double m30 = SafeParse(parts[9], "transform[9]");
+            double m31 = SafeParse(parts[10], "transform[10]");
+            double m32 = SafeParse(parts[11], "transform[11]");
 
             // Row-vector -> column-vector: транспонируем 3x3
             return new Affine3(
@@ -302,10 +343,9 @@ namespace Cad2Gdml.Import
                 new Vec3d(m30, m31, m32));
         }
 
-        // Рекурсивное разрешение объекта в меш
-        private static Mesh ResolveObject(Dictionary<string, XElement> objects, string objectId, Affine3 transform, int depth)
+        // Рекурсивное разрешение объекта в меш (с масштабом на мм)
+        private static Mesh ResolveObject(Dictionary<string, XElement> objects, string objectId, Affine3 transform, int depth, double unitToMm)
         {
-            // Защита от бесконечной рекурсии
             if (depth > 128)
             {
                 return new Mesh();
@@ -317,14 +357,12 @@ namespace Cad2Gdml.Import
                 return new Mesh();
             }
 
-            // Если есть <mesh> — строим меш
             XElement meshEl = FindElement(objEl, "mesh");
             if (meshEl != null)
             {
-                return BuildMeshFromElement(meshEl, transform);
+                return BuildMeshFromElement(meshEl, transform, unitToMm);
             }
 
-            // Если есть <components> — рекурсивно
             XElement componentsEl = FindElement(objEl, "components");
             if (componentsEl != null)
             {
@@ -342,10 +380,9 @@ namespace Cad2Gdml.Import
                     }
                     string childTfStr = GetAttr(comp, "transform");
                     Affine3 childTf = ParseTransform(childTfStr);
-                    // Применяем childTf, затем текущий transform
                     Affine3 effective = transform.Multiply(childTf);
 
-                    Mesh childMesh = ResolveObject(objects, childId, effective, depth + 1);
+                    Mesh childMesh = ResolveObject(objects, childId, effective, depth + 1, unitToMm);
                     result.Append(childMesh);
                 }
                 return result;
@@ -354,10 +391,9 @@ namespace Cad2Gdml.Import
             return new Mesh();
         }
 
-        // Построение меша из элемента <mesh> с применением трансформации
-        private static Mesh BuildMeshFromElement(XElement meshEl, Affine3 transform)
+        // Построение меша из <mesh>; итоговые координаты масштабируются на unitToMm
+        private static Mesh BuildMeshFromElement(XElement meshEl, Affine3 transform, double unitToMm)
         {
-            // Вершины
             List<Vec3d> vertices = new List<Vec3d>();
             XElement verticesEl = FindElement(meshEl, "vertices");
             if (verticesEl != null)
@@ -375,14 +411,13 @@ namespace Cad2Gdml.Import
                     {
                         continue;
                     }
-                    double x = double.Parse(xStr, CultureInfo.InvariantCulture);
-                    double y = double.Parse(yStr, CultureInfo.InvariantCulture);
-                    double z = double.Parse(zStr, CultureInfo.InvariantCulture);
+                    double x = SafeParse(xStr, "vertex.x");
+                    double y = SafeParse(yStr, "vertex.y");
+                    double z = SafeParse(zStr, "vertex.z");
                     vertices.Add(new Vec3d(x, y, z));
                 }
             }
 
-            // Индексы треугольников
             List<int> indices = new List<int>();
             XElement trianglesEl = FindElement(meshEl, "triangles");
             if (trianglesEl != null)
@@ -400,20 +435,22 @@ namespace Cad2Gdml.Import
                     {
                         continue;
                     }
-                    int v1 = int.Parse(s1, CultureInfo.InvariantCulture);
-                    int v2 = int.Parse(s2, CultureInfo.InvariantCulture);
-                    int v3 = int.Parse(s3, CultureInfo.InvariantCulture);
+                    int v1 = (int)SafeParse(s1, "triangle.v1");
+                    int v2 = (int)SafeParse(s2, "triangle.v2");
+                    int v3 = (int)SafeParse(s3, "triangle.v3");
                     indices.Add(v1);
                     indices.Add(v2);
                     indices.Add(v3);
                 }
             }
 
-            // Применяем трансформацию к вершинам
+            // Применяем трансформацию и масштабируем на мм
             Mesh result = new Mesh();
             for (int i = 0; i < vertices.Count; i++)
             {
-                result.Vertices.Add(transform.Apply(vertices[i]));
+                Vec3d p = transform.Apply(vertices[i]);
+                // Перенос и координаты в модельных единицах -> умножаем на unitToMm
+                result.Vertices.Add(new Vec3d(p.X * unitToMm, p.Y * unitToMm, p.Z * unitToMm));
             }
             result.Indices.AddRange(indices);
 
