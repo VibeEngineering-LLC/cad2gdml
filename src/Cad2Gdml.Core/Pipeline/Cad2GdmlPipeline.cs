@@ -463,6 +463,83 @@ namespace Cad2Gdml.Pipeline
 
                 List<List<int>> found = ComponentSplitter.Components(p.Mesh);
                 if (found.Count <= 1) continue;
+
+                // --- Слияние полостей (отрицательный объём) с внешней оболочкой ---
+                int nF = found.Count;
+                double[] compVol = new double[nF];
+                Vec3d[] compMin = new Vec3d[nF];
+                Vec3d[] compMax = new Vec3d[nF];
+                for (int fi = 0; fi < nF; fi++)
+                {
+                    double sv = 0.0;
+                    double mnX = double.MaxValue, mnY = double.MaxValue, mnZ = double.MaxValue;
+                    double mxX = double.MinValue, mxY = double.MinValue, mxZ = double.MinValue;
+                    List<int> tris = found[fi];
+                    for (int tj = 0; tj < tris.Count; tj++)
+                    {
+                        int ti = tris[tj];
+                        Vec3d va = p.Mesh.Vertices[p.Mesh.Indices[ti * 3]];
+                        Vec3d vb = p.Mesh.Vertices[p.Mesh.Indices[ti * 3 + 1]];
+                        Vec3d vc = p.Mesh.Vertices[p.Mesh.Indices[ti * 3 + 2]];
+                        sv += va.Dot(vb.Cross(vc)) / 6.0;
+                        if (va.X < mnX) mnX = va.X;
+                        if (va.Y < mnY) mnY = va.Y;
+                        if (va.Z < mnZ) mnZ = va.Z;
+                        if (va.X > mxX) mxX = va.X;
+                        if (va.Y > mxY) mxY = va.Y;
+                        if (va.Z > mxZ) mxZ = va.Z;
+                        if (vb.X < mnX) mnX = vb.X;
+                        if (vb.Y < mnY) mnY = vb.Y;
+                        if (vb.Z < mnZ) mnZ = vb.Z;
+                        if (vb.X > mxX) mxX = vb.X;
+                        if (vb.Y > mxY) mxY = vb.Y;
+                        if (vb.Z > mxZ) mxZ = vb.Z;
+                        if (vc.X < mnX) mnX = vc.X;
+                        if (vc.Y < mnY) mnY = vc.Y;
+                        if (vc.Z < mnZ) mnZ = vc.Z;
+                        if (vc.X > mxX) mxX = vc.X;
+                        if (vc.Y > mxY) mxY = vc.Y;
+                        if (vc.Z > mxZ) mxZ = vc.Z;
+                    }
+                    compVol[fi] = sv;
+                    compMin[fi] = new Vec3d(mnX, mnY, mnZ);
+                    compMax[fi] = new Vec3d(mxX, mxY, mxZ);
+                }
+
+                const double tol = 1e-6;
+                for (int ci = nF - 1; ci >= 0; ci--)
+                {
+                    if (compVol[ci] >= 0.0) continue;
+                    // ищем оболочку: минимальный положительный объём, BBox содержит BBox полости
+                    int best = -1;
+                    double bestVol = double.MaxValue;
+                    for (int oi = 0; oi < nF; oi++)
+                    {
+                        if (compVol[oi] <= 0.0) continue;
+                        if (compMin[oi].X > compMin[ci].X + tol) continue;
+                        if (compMin[oi].Y > compMin[ci].Y + tol) continue;
+                        if (compMin[oi].Z > compMin[ci].Z + tol) continue;
+                        if (compMax[oi].X < compMax[ci].X - tol) continue;
+                        if (compMax[oi].Y < compMax[ci].Y - tol) continue;
+                        if (compMax[oi].Z < compMax[ci].Z - tol) continue;
+                        if (compVol[oi] < bestVol)
+                        {
+                            bestVol = compVol[oi];
+                            best = oi;
+                        }
+                    }
+                    if (best < 0) continue;
+                    // слияние: индексы полости → оболочка
+                    List<int> target = found[best];
+                    for (int tj = 0; tj < found[ci].Count; tj++)
+                        target.Add(found[ci][tj]);
+                    target.Sort();
+                    found.RemoveAt(ci);
+                    scene.Add("I_CAVITY_MERGED", DiagSeverity.Info, p.Name, "полость объединена с внешней оболочкой (тело с полостью)");
+                }
+
+                if (found.Count <= 1) continue;
+
                 var compMap = new Dictionary<int, List<int>>();
                 for (int ci0 = 0; ci0 < found.Count; ci0++) compMap[ci0] = found[ci0];
 
