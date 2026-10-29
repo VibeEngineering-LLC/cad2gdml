@@ -54,7 +54,15 @@ namespace Cad2Gdml.Pipeline
             try
             {
                 // 1. Загрузка входов
-                if (!LoadInputs(o, scene))
+                bool loaded;
+                try { loaded = LoadInputs(o, scene); }
+                catch (Exception lex) when (lex is IndexOutOfRangeException || lex is ArgumentOutOfRangeException || lex is KeyNotFoundException || lex is OverflowException)
+                {
+                    // разбор формата вышел за границы — вход повреждён
+                    scene.Add("E_FORMAT", DiagSeverity.Error, "", "Повреждённый файл: " + lex.Message);
+                    return Fail(result, 2);
+                }
+                if (!loaded)
                     return Fail(result, 2);
 
                 // 2. Сшивка и топология
@@ -80,6 +88,13 @@ namespace Cad2Gdml.Pipeline
                 WriteOutputs(o, scene, result);
 
                 result.ExitCode = 0;
+                return result;
+            }
+            catch (Exception ex) when (ex is InvalidDataException || ex is FormatException || ex is EndOfStreamException || ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // Битый/недоступный вход — не внутренняя ошибка
+                scene.Add("E_FORMAT", DiagSeverity.Error, "", ex.Message);
+                result.ExitCode = 2;
                 return result;
             }
             catch (Exception ex)
@@ -186,6 +201,16 @@ namespace Cad2Gdml.Pipeline
             {
                 Part p = scene.Parts[i];
                 if (p.Mesh == null) continue;
+
+                // Нечисловые координаты — отказ до сшивки
+                foreach (Vec3d vv in p.Mesh.Vertices)
+                {
+                    if (double.IsNaN(vv.X + vv.Y + vv.Z) || double.IsInfinity(vv.X + vv.Y + vv.Z))
+                    {
+                        scene.Add("E_MESH_NAN", DiagSeverity.Error, p.Name, "Во входе NaN/∞ в координатах.");
+                        return false;
+                    }
+                }
 
                 // Сшивка вершин
                 p.Mesh = MeshWelder.Weld(p.Mesh, weldTol);
