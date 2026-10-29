@@ -556,6 +556,10 @@ namespace Cad2Gdml.App
                     SetStatus("Не удалось показать эскиз: " + pex.Message, false);
                 }
             }
+            else
+            {
+                SetStatus("Эскиз не найден: [" + result.PngPath + "]", false);
+            }
 
             RenderReport(result);
         }

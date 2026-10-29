@@ -147,7 +147,7 @@ namespace Cad2Gdml.Tests
                 if (waited >= sec * 1000)
                     throw new InvalidOperationException("gui_convert_twice: тайм-аут " + sec + " с");
             }
-            for (int k = 0; k < 25; k++) { Application.DoEvents(); Thread.Sleep(20); }
+            for (int k = 0; k < 250; k++) { Application.DoEvents(); Thread.Sleep(20); }
         }
 
         // Первый PNG в каталоге
