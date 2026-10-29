@@ -191,12 +191,29 @@ namespace Cad2Gdml.Pipeline
 
                 if (ext == ".step" || ext == ".stp")
                 {
-                    string code, msg;
-                    var parts = StepImporter.Load(input, out code, out msg);
+                    List<Part> parts;
+                    string code = null, msg = null;
+                    try
+                    {
+                        parts = StepImporter.Load(input, out code, out msg);
+                    }
+                    catch (Exception ex)
+                    {
+                        scene.Add("E_STEP_INTERNAL", DiagSeverity.Error, input, ex.Message);
+                        return false;
+                    }
                     if (parts == null)
                     {
                         scene.Add(code, DiagSeverity.Error, input, msg);
                         return false;
+                    }
+                    // предупреждения STEP
+                    if (StepImporter.LastWarnings != null)
+                    {
+                        for (int wi = 0; wi < StepImporter.LastWarnings.Count; wi++)
+                        {
+                            scene.Add("W_STEP_NOTE", DiagSeverity.Warning, input, StepImporter.LastWarnings[wi]);
+                        }
                     }
                     AddParts(scene, parts, input);
                 }

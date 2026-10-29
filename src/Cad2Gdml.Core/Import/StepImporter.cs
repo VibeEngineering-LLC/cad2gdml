@@ -11,11 +11,34 @@ namespace Cad2Gdml.Import
     // Импортер STEP через внешний Python-скрипт
     public static class StepImporter
     {
+        // Предупреждения последнего запуска
+        private static readonly object WarnLock = new object();
+        public static List<string> LastWarnings { get; }
+
+        static StepImporter()
+        {
+            LastWarnings = new List<string>();
+        }
+
         // Загрузка STEP-файла: создаёт STL в temp, затем считывает их
         public static List<Part> Load(string stepPath, out string errorCode, out string errorMessage)
         {
             errorCode = null;
             errorMessage = null;
+
+            // Очищаем предупреждения
+            lock (WarnLock)
+            {
+                LastWarnings.Clear();
+            }
+
+            // (0) Проверка существования входного файла
+            if (!File.Exists(stepPath))
+            {
+                errorCode = "E_STEP_READ";
+                errorMessage = "Файл STEP не найден: " + stepPath;
+                return null;
+            }
 
             // (1) Поиск python и скрипта
             string python = Environment.GetEnvironmentVariable("CAD2GDML_PYTHON");
@@ -70,18 +93,29 @@ namespace Cad2Gdml.Import
                 StringBuilder sbOut = new StringBuilder();
                 StringBuilder sbErr = new StringBuilder();
 
-                Process proc = new Process();
-                proc.StartInfo = psi;
-                proc.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+                Process proc;
+                try
                 {
-                    if (e.Data != null) sbOut.AppendLine(e.Data);
-                };
-                proc.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e)
+                    proc = new Process();
+                    proc.StartInfo = psi;
+                    proc.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+                    {
+                        if (e.Data != null) sbOut.AppendLine(e.Data);
+                    };
+                    proc.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e)
+                    {
+                        if (e.Data != null) sbErr.AppendLine(e.Data);
+                    };
+                    proc.Start();
+                }
+                catch (Exception ex)
                 {
-                    if (e.Data != null) sbErr.AppendLine(e.Data);
-                };
+                    // Не удалось запустить (не исполняемый файл и т.п.)
+                    errorCode = "E_STEP_NO_RUNTIME";
+                    errorMessage = "Не удалось запустить модуль STEP (" + ex.Message + "): проверьте переменную CAD2GDML_PYTHON.";
+                    return null;
+                }
 
-                proc.Start();
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
 
@@ -125,16 +159,29 @@ namespace Cad2Gdml.Import
                             eMsg = mMsg.Groups[1].Value;
                     }
 
+                    // Декодирование unicode-эскейпов в сообщении
+                    if (eMsg != null)
+                    {
+                        try { eMsg = Regex.Unescape(eMsg); }
+                        catch { /* оставляем как есть */ }
+                    }
+
                     if (eMsg == null)
                     {
                         string errText = sbErr.ToString();
                         eMsg = errText.Length > 300 ? errText.Substring(errText.Length - 300) : errText;
                     }
 
+                    // Собираем строки с "skipped"
+                    AddSkippedWarnings(sbOut.ToString(), sbErr.ToString());
+
                     errorCode = eCode;
                     errorMessage = "STEP: " + eMsg;
                     return null;
                 }
+
+                // Собираем строки с "skipped" из stdout/stderr
+                AddSkippedWarnings(sbOut.ToString(), sbErr.ToString());
 
                 // (5) Загрузка STL из temp
                 string[] files = Directory.GetFiles(tempDir, "*.stl");
@@ -144,16 +191,26 @@ namespace Cad2Gdml.Import
                 for (int i = 0; i < files.Length; i++)
                 {
                     Part p = null;
+                    bool failed = false;
                     try
                     {
                         p = StlImporter.Load(files[i], 1.0);
                     }
                     catch
                     {
-                        continue;
+                        failed = true;
                     }
 
-                    if (p == null) continue;
+                    if (failed || p == null)
+                    {
+                        // Фиксируем предупреждение
+                        string warnName = Path.GetFileNameWithoutExtension(files[i]);
+                        lock (WarnLock)
+                        {
+                            LastWarnings.Add("STEP: не удалось прочитать деталь " + warnName);
+                        }
+                        continue;
+                    }
 
                     // Убираем префикс NNN_ из имени
                     string fn = Path.GetFileNameWithoutExtension(files[i]);
@@ -177,6 +234,41 @@ namespace Cad2Gdml.Import
                 // (6) Удаление временной папки
                 try { Directory.Delete(tempDir, true); }
                 catch { }
+            }
+        }
+
+        // Добавляет строки, содержащие "skipped" (не более 5), в LastWarnings
+        private static void AddSkippedWarnings(string outText, string errText)
+        {
+            int added = 0;
+            string[] outLines = outText.Split('\n');
+            for (int i = 0; i < outLines.Length && added < 5; i++)
+            {
+                string line = outLines[i].Trim();
+                if (line.Length > 0 && line.IndexOf("skipped", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    lock (WarnLock)
+                    {
+                        LastWarnings.Add("STEP: " + line);
+                    }
+                    added++;
+                }
+            }
+            if (added < 5)
+            {
+                string[] errLines = errText.Split('\n');
+                for (int i = 0; i < errLines.Length && added < 5; i++)
+                {
+                    string line = errLines[i].Trim();
+                    if (line.Length > 0 && line.IndexOf("skipped", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        lock (WarnLock)
+                        {
+                            LastWarnings.Add("STEP: " + line);
+                        }
+                        added++;
+                    }
+                }
             }
         }
     }

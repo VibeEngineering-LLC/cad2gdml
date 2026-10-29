@@ -91,14 +91,17 @@ namespace Cad2Gdml.Materials
                 new KeyValuePair<string, double>("Br", 0.63312));
 
             // Встроенные правила: границы и слева, и справа
+            // Корпус/экран/медь — ПЕРВЫМИ, чтобы переопределить кристалл
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(shell|housing|case|корпус|оболоч)(?=$|[^\\p{L}])", "G4_Al", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(lead|pb|свинец)(?=$|[^\\p{L}])", "G4_Pb", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(cu|copper|медь)(?=$|[^\\p{L}])", "G4_Cu", false));
+            // Кристаллы — после корпуса
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(labr3?|labr3_ce|lanthanum.?bromide|бромид.?лантана)(?=$|[^\\p{L}])", "LaBr3", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(csi|cesium.?iodide|иодид.?цезия)(?=$|[^\\p{L}])", "CsI", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(nai)(?=$|[^\\p{L}])", "NaI", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(crystal|кристалл|scint)(?=$|[^\\p{L}])", "NaI", true));
-            lib.Rules.Add(Builtin("(^|[^\\p{L}])(shell|housing|case|корпус|оболоч)(?=$|[^\\p{L}])", "G4_Al", false));
+            // Остальные — без изменений
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(water|вода|sample|проб)(?=$|[^\\p{L}])", "G4_WATER", false));
-            lib.Rules.Add(Builtin("(^|[^\\p{L}])(lead|pb|свинец)(?=$|[^\\p{L}])", "G4_Pb", false));
-            lib.Rules.Add(Builtin("(^|[^\\p{L}])(cu|copper|медь)(?=$|[^\\p{L}])", "G4_Cu", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(air|воздух)(?=$|[^\\p{L}])", "G4_AIR", false));
 
             return lib;
