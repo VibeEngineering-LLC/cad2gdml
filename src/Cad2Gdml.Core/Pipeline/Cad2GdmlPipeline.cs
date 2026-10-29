@@ -739,20 +739,22 @@ namespace Cad2Gdml.Pipeline
             }
         }
 
+        // Убирает хвостовой суффикс мат/.N из имени материала исходного файла
+        private static string CleanSourceMaterial(string s)
+        {
+            if (s == null) return null;
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"([_ .]mat)?(\.\d+)?$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return s.Trim();
+        }
+
         // Назначение веществ по правилам
         private static bool ResolveMaterials(PipelineOptions o, SceneModel scene)
         {
             MaterialLibrary lib;
+            string mp = EffectiveMaterialsPath(o);
             try
             {
-                if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
-                {
-                    lib = MaterialLibrary.LoadJson(o.MaterialsJsonPath);
-                }
-                else
-                {
-                    lib = MaterialLibrary.Default();
-                }
+                lib = (mp != null) ? MaterialLibrary.LoadJson(mp) : MaterialLibrary.Default();
             }
             catch (InvalidDataException ex)
             {
@@ -776,6 +778,12 @@ namespace Cad2Gdml.Pipeline
                 scene.Add("E_FORMAT", DiagSeverity.Error, "",
                     "Не удалось загрузить файл веществ: " + ex.Message);
                 return false;
+            }
+
+            // автообнаруженный файл материалов
+            if (string.IsNullOrEmpty(o.MaterialsJsonPath) && mp != null)
+            {
+                scene.Add("I_MAT_FILE", DiagSeverity.Info, "", "Материалы взяты из файла рядом с моделью: " + mp);
             }
 
             // Ручные назначения веществ (overrides)
@@ -850,6 +858,9 @@ namespace Cad2Gdml.Pipeline
                 }
             }
 
+            // Список деталей без вещества — для группового отчёта
+            var unassigned = new List<string>();
+
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -858,12 +869,55 @@ namespace Cad2Gdml.Pipeline
                     continue;
 
                 lib.LastResolveWasGuess = false;
-                string mat = lib.Resolve(p.Name);
+                // Для деталей из разбивки: убираем префикс только если группа = имя файла без расширения
+                string resolveKey = p.Name;
+                if (p.SplitGroup != null && p.SplitGroup.Length > 0 && p.SourceFile != null)
+                {
+                    string srcBase = Path.GetFileNameWithoutExtension(p.SourceFile);
+                    if (srcBase != null && string.Equals(p.SplitGroup, srcBase, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (p.Name.StartsWith(p.SplitGroup, StringComparison.Ordinal))
+                            resolveKey = p.Name.Substring(p.SplitGroup.Length);
+                    }
+                }
+                string mat = lib.Resolve(resolveKey);
+                bool isGuess = lib.LastResolveWasGuess;
+
+                // Если по имени не найдено или догадка — пробуем материал из исходного файла
+                if ((mat == null || isGuess) && !string.IsNullOrEmpty(p.SourceMaterial))
+                {
+                    string clean = CleanSourceMaterial(p.SourceMaterial);
+                    string srcMat = null;
+                    bool srcGuess = false;
+
+                    if (clean != null && clean.Length > 0)
+                    {
+                        string id = MaterialNames.ToId(clean);
+                        if (lib.Find(id) != null)
+                        {
+                            srcMat = id;
+                        }
+                        else
+                        {
+                            lib.LastResolveWasGuess = false;
+                            srcMat = lib.Resolve(clean);
+                            srcGuess = lib.LastResolveWasGuess;
+                        }
+                    }
+
+                    if (srcMat != null && !srcGuess)
+                    {
+                        p.Material = srcMat;
+                        scene.Add("I_MAT_FROM_SOURCE", DiagSeverity.Info, p.Name,
+                            "Вещество взято из материала исходного файла «" + p.SourceMaterial + "»: " + srcMat);
+                        continue;
+                    }
+                }
 
                 if (mat != null)
                 {
                     p.Material = mat;
-                    if (p.Role == PartRole.Crystal && lib.LastResolveWasGuess)
+                    if (p.Role == PartRole.Crystal && isGuess)
                     {
                         scene.Add("W_MAT_GUESS", DiagSeverity.Warning, p.Name,
                             "Вещество кристалла назначено по общим словам: " + mat);
@@ -879,9 +933,28 @@ namespace Cad2Gdml.Pipeline
                 }
                 else
                 {
-                    scene.Add("E_MAT_UNASSIGNED", DiagSeverity.Error, p.Name, "Вещество не назначено.");
-                    return false;
+                    // запоминаем и продолжаем
+                    unassigned.Add(p.Name);
                 }
+            }
+
+            // Групповой отчёт по не назначенным
+            if (unassigned.Count > 0)
+            {
+                int count = unassigned.Count;
+                int show = Math.Min(15, count);
+                var names = new List<string>(show);
+                for (int ni = 0; ni < show; ni++)
+                    names.Add(unassigned[ni]);
+
+                string msg = "Вещество не назначено у деталей (" + count.ToString(CultureInfo.InvariantCulture) + "): "
+                    + string.Join(", ", names);
+                if (count > 15)
+                    msg += " и ещё " + (count - 15).ToString(CultureInfo.InvariantCulture);
+                msg += ". Включите «Разрешить вещество по умолчанию» или задайте вещества (--material имя=вещество, материалы.json рядом с моделью).";
+
+                scene.Add("E_MAT_UNASSIGNED", DiagSeverity.Error, "", msg);
+                return false;
             }
 
             return true;
@@ -912,11 +985,8 @@ namespace Cad2Gdml.Pipeline
             string pngTmp = pngPath + ".tmp";
             string reportTmp = reportPath + ".tmp";
 
-            MaterialLibrary lib;
-            if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
-                lib = MaterialLibrary.LoadJson(o.MaterialsJsonPath);
-            else
-                lib = MaterialLibrary.Default();
+            string mp = EffectiveMaterialsPath(o);
+            MaterialLibrary lib = (mp != null) ? MaterialLibrary.LoadJson(mp) : MaterialLibrary.Default();
 
             var sketch = SketchBuilder.Build(scene);
             Bitmap pngBitmap = GdiSketchRenderer.Render(sketch, 1200, 800);
@@ -1017,6 +1087,54 @@ namespace Cad2Gdml.Pipeline
         {
             string ext = Path.GetExtension(path);
             return (ext != null) ? ext.ToLowerInvariant() : "";
+        }
+
+        // Определяет путь к materials.json: явный или рядом с моделью
+        private static string EffectiveMaterialsPath(PipelineOptions o)
+        {
+            if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
+                return o.MaterialsJsonPath;
+
+            if (o.Inputs == null || o.Inputs.Count == 0)
+                return null;
+
+            try
+            {
+                string first = o.Inputs[0];
+                string dir;
+                string baseName;
+
+                if (Directory.Exists(first))
+                {
+                    dir = first;
+                    baseName = null;
+                }
+                else
+                {
+                    dir = Path.GetDirectoryName(first);
+                    baseName = Path.GetFileNameWithoutExtension(first);
+                }
+
+                if (string.IsNullOrEmpty(dir))
+                    dir = ".";
+
+                string c1 = Path.Combine(dir, "materials.json");
+                if (File.Exists(c1))
+                    return c1;
+
+                if (!string.IsNullOrEmpty(baseName))
+                {
+                    string c2 = Path.Combine(dir, baseName + ".materials.json");
+                    if (File.Exists(c2))
+                        return c2;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
         }
 
         private static PipelineResult Fail(PipelineResult result)

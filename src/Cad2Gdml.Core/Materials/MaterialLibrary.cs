@@ -71,6 +71,17 @@ namespace Cad2Gdml.Materials
             lib.Materials["G4_POLYETHYLENE"] = Nist("G4_POLYETHYLENE", 0.94,
                 new KeyValuePair<string, double>("H", 0.143711),
                 new KeyValuePair<string, double>("C", 0.856289));
+            lib.Materials["G4_POLYCARBONATE"] = Nist("G4_POLYCARBONATE", 1.2,
+                new KeyValuePair<string, double>("H", 0.055491),
+                new KeyValuePair<string, double>("C", 0.755751),
+                new KeyValuePair<string, double>("O", 0.188758));
+            lib.Materials["G4_TEFLON"] = Nist("G4_TEFLON", 2.2,
+                new KeyValuePair<string, double>("C", 0.240183),
+                new KeyValuePair<string, double>("F", 0.759817));
+            lib.Materials["G4_RUBBER_NEOPRENE"] = Nist("G4_RUBBER_NEOPRENE", 1.23,
+                new KeyValuePair<string, double>("H", 0.05692),
+                new KeyValuePair<string, double>("C", 0.542646),
+                new KeyValuePair<string, double>("Cl", 0.400434));
 
             // Свои вещества
             lib.Materials["NaI"] = Custom("NaI", 3.67,
@@ -89,12 +100,27 @@ namespace Cad2Gdml.Materials
             lib.Materials["LaBr3_Ce"] = Custom("LaBr3_Ce", 5.08,
                 new KeyValuePair<string, double>("La", 0.36688),
                 new KeyValuePair<string, double>("Br", 0.63312));
+            lib.Materials["FR4"] = Custom("FR4", 1.86,
+                new KeyValuePair<string, double>("Si", 0.2206),
+                new KeyValuePair<string, double>("O", 0.3696),
+                new KeyValuePair<string, double>("C", 0.3726),
+                new KeyValuePair<string, double>("H", 0.0372));
 
             // Встроенные правила: границы и слева, и справа
             // Корпус/экран/медь — ПЕРВЫМИ, чтобы переопределить кристалл
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(shell|housing|case|корпус|оболоч)(?=$|[^\\p{L}])", "G4_Al", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(lead|pb|свинец)(?=$|[^\\p{L}])", "G4_Pb", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(cu|copper|медь)(?=$|[^\\p{L}])", "G4_Cu", false));
+            // Алюминий: марки сплавов и слово
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(al\\d{3,4}|al|alumin\\w*|алюмин\\w*)(?=$|[^\\p{L}])", "G4_Al", false));
+            // Поликарбонат, тефлон, резина, FR4, кремний, контакты
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(bezel|polycarbonate|поликарбонат|рамка)(?=$|[^\\p{L}])", "G4_POLYCARBONATE", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(reflector|teflon|ptfe|фторопласт|отражатель)(?=$|[^\\p{L}])", "G4_TEFLON", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(rubber|резин|gasket|seal|уплотнител)(?=$|[^\\p{L}])", "G4_RUBBER_NEOPRENE", true));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(pcb|fr4|board|плата)(?=$|[^\\p{L}])", "FR4", true));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(base.?plate|baseplate|подложк)(?=$|[^\\p{L}])", "FR4", true));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(sipm_chip|silicon|кремни)(?=$|[^\\p{L}])", "G4_Si", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(pin|pins|контакт)(?=$|[^\\p{L}])", "G4_Cu", true));
             // Кристаллы — после корпуса
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(labr3?|labr3_ce|lanthanum.?bromide|бромид.?лантана)(?=$|[^\\p{L}])", "LaBr3", false));
             lib.Rules.Add(Builtin("(^|[^\\p{L}])(csi|cesium.?iodide|иодид.?цезия)(?=$|[^\\p{L}])", "CsI", false));

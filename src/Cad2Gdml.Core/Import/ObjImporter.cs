@@ -19,6 +19,7 @@ namespace Cad2Gdml.Import
 
             // Состояние текущей группы
             string currentName = fileName;
+            string currentMat = null;
             List<int[]> currentFaces = new List<int[]>();
             int totalFaceCount = 0;
             int lineNo = 0;
@@ -28,6 +29,7 @@ namespace Cad2Gdml.Import
             {
                 if (currentFaces.Count == 0)
                 {
+                    currentMat = null;
                     return;
                 }
 
@@ -35,6 +37,8 @@ namespace Cad2Gdml.Import
                 part.Name = currentName;
                 part.OrigName = currentName;
                 part.SourceFile = path;
+                part.SourceMaterial = currentMat;
+                currentMat = null;
 
                 Mesh mesh = new Mesh();
                 Dictionary<int, int> vertMap = new Dictionary<int, int>();
@@ -123,6 +127,14 @@ namespace Cad2Gdml.Import
                         FinalizeCurrent();
                         currentName = args.Length > 0 ? args : fileName;
                     }
+                    else if (tag == "usemtl")
+                    {
+                        // Первый usemtl в группе задаёт материал
+                        if (currentMat == null && args.Length > 0)
+                        {
+                            currentMat = args;
+                        }
+                    }
                     else if (tag == "f")
                     {
                         // Грани: f v | v/vt | v//vn | v/vt/vn
@@ -167,7 +179,7 @@ namespace Cad2Gdml.Import
                             totalFaceCount++;
                         }
                     }
-                    // vt, vn, usemtl, mtllib — игнорируем
+                    // vt, vn, mtllib — игнорируем
                 }
             }
 

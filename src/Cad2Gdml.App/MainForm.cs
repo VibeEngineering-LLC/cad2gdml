@@ -564,6 +564,12 @@ namespace Cad2Gdml.App
                 }
                 SetStatus(statusLine, false);
                 RenderFailureReport(result);
+                // разблокируем кнопку веществ, чтобы пользователь мог назначить вручную
+                if (result.Scene != null && result.Scene.Parts.Count > 0)
+                {
+                    _lastResult = result;
+                    _btnMaterials.Enabled = true;
+                }
                 return;
             }
 

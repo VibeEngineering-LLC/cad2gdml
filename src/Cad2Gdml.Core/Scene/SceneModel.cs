@@ -97,6 +97,7 @@ namespace Cad2Gdml.Scene
         public string SourceFile { get; set; }
         public bool MeshOpen { get; set; } // у сетки остались открытые рёбра
         public string SplitGroup { get; set; } // имя исходной детали, если эта получена разбивкой (иначе null)
+        public string SourceMaterial { get; set; } // имя материала из исходного файла (OBJ usemtl), иначе null
     }
 
     // Модель сцены: детали + диагностика
