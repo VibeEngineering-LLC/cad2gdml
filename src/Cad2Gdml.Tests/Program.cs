@@ -38,6 +38,7 @@ namespace Cad2Gdml.Tests
             checks.AddRange(Checks2b.All(_tempDir));
             checks.AddRange(Checks2c.All(_tempDir));
             checks.AddRange(Checks2d.All(_tempDir));
+            checks.AddRange(Checks2e.All(_tempDir));
             checks.AddRange(ChecksGui.All(_tempDir));
 
             foreach (var kv in checks)

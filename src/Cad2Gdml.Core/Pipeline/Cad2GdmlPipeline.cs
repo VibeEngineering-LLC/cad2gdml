@@ -279,9 +279,14 @@ namespace Cad2Gdml.Pipeline
 
                 if (topo.NonManifoldEdges > 0)
                 {
-                    scene.Add("W_MESH_NONMANIFOLD", DiagSeverity.Warning, p.Name,
-                        "Неманифольдных рёбер: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture)
-                        + " (касающиеся тела в одной сетке); Geant4 может потребовать разбивки на детали.");
+                    string nmText = "Неманифольдных рёбер: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture)
+                        + " (ребро у трёх и более граней внутри одного тела); знак объёма проверен только по сумме.";
+                    if (o.NoSplit)
+                    {
+                        scene.Add("E_MESH_NONMANIFOLD", DiagSeverity.Error, p.Name, nmText + " Уберите --no-split: касающиеся тела разделятся.");
+                        return false;
+                    }
+                    scene.Add("W_MESH_NONMANIFOLD", DiagSeverity.Warning, p.Name, nmText);
                 }
 
                 if (topo.InconsistentEdges > 0)
@@ -332,37 +337,13 @@ namespace Cad2Gdml.Pipeline
                 Part p = scene.Parts[pi];
                 if (p.Mesh == null) continue;
 
-                int nVerts = p.Mesh.Vertices.Count;
-                if (nVerts == 0) continue;
+                if (p.Mesh.Vertices.Count == 0) continue;
 
-                // Union-Find по вершинам
-                int[] parent = new int[nVerts];
-                for (int vi = 0; vi < nVerts; vi++) parent[vi] = vi;
-
-                for (int ti = 0; ti < p.Mesh.TriangleCount; ti++)
-                {
-                    int i0 = p.Mesh.Indices[ti * 3];
-                    int i1 = p.Mesh.Indices[ti * 3 + 1];
-                    int i2 = p.Mesh.Indices[ti * 3 + 2];
-                    Union(parent, i0, i1);
-                    Union(parent, i1, i2);
-                }
-
-                // Группировка треугольников по компоненте (корень первой вершины)
+                // Компоненты по манифольдным рёбрам: тела, касающиеся ребром или точкой, не склеиваются
+                List<List<int>> found = ComponentSplitter.Components(p.Mesh);
+                if (found.Count <= 1) continue;
                 var compMap = new Dictionary<int, List<int>>();
-                for (int ti = 0; ti < p.Mesh.TriangleCount; ti++)
-                {
-                    int root = Find(parent, p.Mesh.Indices[ti * 3]);
-                    List<int> list;
-                    if (!compMap.TryGetValue(root, out list))
-                    {
-                        list = new List<int>();
-                        compMap[root] = list;
-                    }
-                    list.Add(ti);
-                }
-
-                if (compMap.Count <= 1) continue;
+                for (int ci0 = 0; ci0 < found.Count; ci0++) compMap[ci0] = found[ci0];
 
                 // Сортировка: убывание числа треугольников, при равенстве — меньший мин. индекс вершины
                 var comps = new List<KeyValuePair<int, List<int>>>(compMap.Count);
@@ -447,7 +428,7 @@ namespace Cad2Gdml.Pipeline
                     newMesh.Vertices.AddRange(newVerts);
                     newMesh.Indices.AddRange(newIndices);
 
-                    string newName = p.Name + "_c" + (ci + 1).ToString("D2", CultureInfo.InvariantCulture);
+                    string newName = p.Name + "_c" + (ci + 1).ToString("D" + Math.Max(2, nComp.ToString(CultureInfo.InvariantCulture).Length).ToString(CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
 
                     Part np = new Part();
                     np.Name = newName;
@@ -470,25 +451,6 @@ namespace Cad2Gdml.Pipeline
                     scene.Parts.Insert(pi + ni, newParts[ni]);
                 }
             }
-        }
-
-        // Union-Find: найти корень
-        private static int Find(int[] parent, int x)
-        {
-            while (parent[x] != x)
-            {
-                parent[x] = parent[parent[x]];
-                x = parent[x];
-            }
-            return x;
-        }
-
-        // Union-Find: объединить
-        private static void Union(int[] parent, int a, int b)
-        {
-            int ra = Find(parent, a);
-            int rb = Find(parent, b);
-            if (ra != rb) parent[ra] = rb;
         }
 
         // Поиск детали с ролью Crystal
@@ -911,7 +873,7 @@ namespace Cad2Gdml.Pipeline
             if (code.StartsWith("E_FORMAT") || code.StartsWith("E_UNIT_MISSING")
                 || code.StartsWith("E_STEP_NOT_SUPPORTED"))
                 return 2;
-            if (code.StartsWith("E_MESH"))
+            if (code.StartsWith("E_MESH") || code.StartsWith("E_SCENE"))
                 return 3;
             if (code.StartsWith("E_ROLE") || code.StartsWith("E_FRONT_AMBIG")
                 || code.StartsWith("E_AXIS_AMBIG"))

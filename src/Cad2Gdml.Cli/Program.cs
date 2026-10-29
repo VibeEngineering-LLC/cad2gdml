@@ -42,6 +42,7 @@ namespace Cad2Gdml.Cli
             bool allowDefault = false;
             bool dropOpen = false;
             bool keepOpen = false;
+            bool noSplit = false;
 
             int idx = 0;
             while (idx < args.Length)
@@ -90,6 +91,10 @@ namespace Cad2Gdml.Cli
                 {
                     dropOpen = true;
                 }
+                else if (a == "--no-split")
+                {
+                    noSplit = true;
+                }
                 else if (a.Length > 2 && a[0] == '-' && a[1] == '-')
                 {
                     Console.Error.WriteLine("Неизвестный параметр: " + a);
@@ -112,6 +117,11 @@ namespace Cad2Gdml.Cli
             if (inputs.Count == 0)
             {
                 Console.Error.WriteLine("Не заданы входные файлы.");
+                return 2;
+            }
+            if (keepOpen && dropOpen)
+            {
+                Console.Error.WriteLine("--keep-open и --drop-open несовместимы.");
                 return 2;
             }
 
@@ -153,7 +163,8 @@ namespace Cad2Gdml.Cli
                 MaterialsJsonPath = materials,
                 AllowDefaultMaterial = allowDefault,
                 DropOpen = dropOpen,
-                KeepOpen = keepOpen
+                KeepOpen = keepOpen,
+                NoSplit = noSplit
             };
 
             // Запуск конвейера
@@ -189,6 +200,7 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
             Console.WriteLine("  --keep-open                Оставлять открытые сетки с предупреждением");
+            Console.WriteLine("  --no-split                 Не разбивать деталь на связные тела");
             Console.WriteLine("  --help, -h                 Эта справка");
         }
 

@@ -39,6 +39,7 @@ namespace Cad2Gdml.App
         private Button _btnConvert;
         private Button _btnOpenFolder;
         private CheckBox _chkAllowDefault;
+        private CheckBox _chkNoSplit;
         private CheckBox _chkDropOpen;
 
         // Левый список, картинка, отчёт, статус
@@ -67,7 +68,7 @@ namespace Cad2Gdml.App
         {
             this.Text = "CAD → GDML";
             this.ClientSize = new Size(1120, 740);
-            this.MinimumSize = new Size(960, 600);
+            this.MinimumSize = new Size(1100, 600);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Font = new Font("Segoe UI", 9f);
 
@@ -174,8 +175,19 @@ namespace Cad2Gdml.App
 
             topTable.SetColumnSpan(_chkAllowDefault, 3);
             topTable.Controls.Add(_chkAllowDefault, 0, 2);
-            topTable.SetColumnSpan(_chkDropOpen, 3);
-            topTable.Controls.Add(_chkDropOpen, 3, 2);
+            _chkNoSplit = new CheckBox();
+            _chkNoSplit.Text = "Не разбивать на тела";
+            _chkNoSplit.AutoSize = true;
+            _chkNoSplit.Margin = new Padding(4);
+
+            var flowChecks = new FlowLayoutPanel();
+            flowChecks.AutoSize = true;
+            flowChecks.WrapContents = false;
+            flowChecks.Margin = new Padding(0);
+            flowChecks.Controls.Add(_chkDropOpen);
+            flowChecks.Controls.Add(_chkNoSplit);
+            topTable.SetColumnSpan(flowChecks, 3);
+            topTable.Controls.Add(flowChecks, 3, 2);
             topTable.SetColumnSpan(_btnOpenFolder, 2);
             topTable.Controls.Add(_btnOpenFolder, 6, 2);
 
@@ -482,6 +494,7 @@ namespace Cad2Gdml.App
             opts.FrontSign = _cmbFront.SelectedItem.ToString();
             opts.AllowDefaultMaterial = _chkAllowDefault.Checked;
             opts.DropOpen = _chkDropOpen.Checked;
+            opts.NoSplit = _chkNoSplit.Checked;
 
             _btnOpenFolder.Enabled = false;
             SetControlsEnabled(false);
@@ -745,6 +758,7 @@ namespace Cad2Gdml.App
             _btnBrowseOut.Enabled = en;
             _btnConvert.Enabled = en;
             _chkAllowDefault.Enabled = en;
+            _chkNoSplit.Enabled = en;
             _chkDropOpen.Enabled = en;
             _lstInputs.Enabled = en;
         }

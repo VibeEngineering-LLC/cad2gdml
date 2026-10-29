@@ -102,6 +102,70 @@ namespace Cad2Gdml.Scene
                     p.Role = PartRole.Housing;
             }
 
+            // Куски одной разбитой детали (<имя>_cNN): кристаллом остаётся крупнейший
+            if (!hasOverride)
+            {
+                var groups = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<Part>>();
+                foreach (var p in scene.Parts)
+                {
+                    if (p.Role != PartRole.Crystal) continue;
+                    Match m = Regex.Match(p.Name, "^(.+)_c(\\d+)$");
+                    if (!m.Success) continue;
+                    string prefix = m.Groups[1].Value;
+                    System.Collections.Generic.List<Part> bucket;
+                    if (!groups.TryGetValue(prefix, out bucket))
+                    {
+                        bucket = new System.Collections.Generic.List<Part>();
+                        groups[prefix] = bucket;
+                    }
+                    bucket.Add(p);
+                }
+
+                // Детерминированный порядок — ordinal по префиксу
+                var prefixes = new System.Collections.Generic.List<string>(groups.Keys);
+                prefixes.Sort(StringComparer.Ordinal);
+
+                foreach (string prefix in prefixes)
+                {
+                    System.Collections.Generic.List<Part> bucket = groups[prefix];
+                    if (bucket.Count < 2) continue;
+
+                    // Сумма треугольников и лучший (наим. имя при равенстве)
+                    int total = 0;
+                    Part best = null;
+                    int bestTc = 0;
+                    foreach (var p in bucket)
+                    {
+                        int tc = (p.Mesh != null) ? p.Mesh.TriangleCount : 0;
+                        total += tc;
+                        if (best == null || tc > bestTc || (tc == bestTc && string.CompareOrdinal(p.Name, best.Name) < 0))
+                        {
+                            best = p;
+                            bestTc = tc;
+                        }
+                    }
+
+                    // 80 % порог: bestTc * 5 >= total * 4
+                    if (bestTc * 5 >= total * 4)
+                    {
+                        foreach (var p in bucket)
+                        {
+                            if (p != best)
+                                p.Role = PartRole.Other;
+                        }
+                        scene.Add("W_ROLE_GUESS", DiagSeverity.Warning, prefix,
+                            "файл разбит на несколько тел: роль кристалла оставлена у крупнейшего (" + best.Name + "); если это не он — укажите имя в поле «Кристалл»");
+                    }
+                    else
+                    {
+                        foreach (var p in bucket)
+                            p.Role = PartRole.Other;
+                        scene.Add("W_ROLE_GUESS", DiagSeverity.Warning, prefix,
+                            "файл разбит на несколько тел, кристалл не определён: укажите имя тела в поле «Кристалл» (например " + prefix + "_c01)");
+                    }
+                }
+            }
+
             // Подсчёт кристаллов
             int crystalCount = 0;
             foreach (var p in scene.Parts)
@@ -111,9 +175,7 @@ namespace Cad2Gdml.Scene
             }
 
             // Диагностика: отсутствие или неоднозначность
-            if (crystalCount == 0)
-                scene.Add("E_ROLE_NONE", DiagSeverity.Error, "", "кристалл не найден");
-            else if (crystalCount > 1)
+            if (crystalCount > 1)
                 scene.Add("E_ROLE_AMBIG", DiagSeverity.Error, "",
                     "несколько кристаллов: " + crystalCount.ToString(CultureInfo.InvariantCulture));
 

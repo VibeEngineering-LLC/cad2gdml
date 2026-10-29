@@ -168,6 +168,21 @@ namespace Cad2Gdml.Sketch
             List<Part> partOrder = new List<Part>();
             Dictionary<Part, List<SketchRegion>> partRegions = new Dictionary<Part, List<SketchRegion>>();
 
+            // Без кристалла кадр не строится: сечение — на середине габарита сцены по y (иначе плоскость y=0 файла может мимо)
+            double sectionY = 0.0;
+            bool hasCrystal = false;
+            double yMin = double.MaxValue, yMax = double.MinValue;
+            foreach (Part part in scene.Parts)
+            {
+                if (part.Role == PartRole.Crystal) hasCrystal = true;
+                if (part.Mesh == null || part.Mesh.TriangleCount == 0) continue;
+                Vec3d lo, hi;
+                part.Mesh.GetBounds(out lo, out hi);
+                if (lo.Y < yMin) yMin = lo.Y;
+                if (hi.Y > yMax) yMax = hi.Y;
+            }
+            if (!hasCrystal && yMax >= yMin) sectionY = 0.5 * (yMin + yMax);
+
             foreach (Part part in scene.Parts)
             {
                 if (part.Shape == null)
@@ -188,7 +203,7 @@ namespace Cad2Gdml.Sketch
                         AddBox(regs, part);
                         break;
                     case SolidKind.Tessellated:
-                        AddTessellated(regs, part);
+                        AddTessellated(regs, part, sectionY);
                         break;
                 }
 
@@ -565,8 +580,8 @@ namespace Cad2Gdml.Sketch
             outList.Add(MakeRect(part, cx - halfW, cx + halfW, cz - halfH, cz + halfH));
         }
 
-        // Tessellated — сечение треугольников плоскостью y=0
-        private static void AddTessellated(List<SketchRegion> outList, Part part)
+        // Tessellated — сечение треугольников плоскостью y = sectionY (0 при наличии кристалла)
+        private static void AddTessellated(List<SketchRegion> outList, Part part, double sectionY)
         {
             Mesh mesh = part.Mesh;
             if (mesh == null || mesh.TriangleCount == 0)
@@ -580,6 +595,11 @@ namespace Cad2Gdml.Sketch
             {
                 Vec3d a, b, c;
                 mesh.GetTriangle(i, out a, out b, out c);
+
+                // Сдвиг: плоскость реза y = sectionY приводится к y = 0
+                a = new Vec3d(a.X, a.Y - sectionY, a.Z);
+                b = new Vec3d(b.X, b.Y - sectionY, b.Z);
+                c = new Vec3d(c.X, c.Y - sectionY, c.Z);
 
                 double[] pa = CrossY(a, b);
                 double[] pb = CrossY(b, c);
@@ -608,7 +628,7 @@ namespace Cad2Gdml.Sketch
             outList.AddRange(chains);
         }
 
-        // Пересечение отрезка с y=0; null если нет
+        // Пересечение отрезка с y = 0 (сдвинутые точки); null если нет
         private static double[] CrossY(Vec3d a, Vec3d b)
         {
             if (Math.Abs(a.Y) < 1e-12 && Math.Abs(b.Y) < 1e-12)
