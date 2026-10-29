@@ -1,5 +1,6 @@
 import sys, os, json, argparse
 sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pylib"))
 from OCP.STEPCAFControl import STEPCAFControl_Reader
 from OCP.Interface import Interface_Static
 from OCP.IFSelect import IFSelect_RetDone

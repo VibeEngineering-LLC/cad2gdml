@@ -49,6 +49,8 @@ namespace Cad2Gdml.Import
                 string fb = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "ocpenv", "Scripts", "python.exe");
                 if (File.Exists(fb))
                     python = fb;
+                else if (Directory.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "pylib")))
+                    python = FindPythonOnPath();
                 else
                     python = null;
             }
@@ -270,6 +272,36 @@ namespace Cad2Gdml.Import
                     }
                 }
             }
+        }
+
+        // Поиск python.exe в PATH, исключая WindowsApps
+        private static string FindPythonOnPath()
+        {
+            string pathVar = Environment.GetEnvironmentVariable("PATH");
+            if (pathVar == null) return null;
+
+            string[] entries = pathVar.Split(Path.PathSeparator);
+            for (int i = 0; i < entries.Length; i++)
+            {
+                string dir = entries[i].Trim().Trim('"');
+                if (dir.Length == 0) continue;
+
+                string candidate;
+                try
+                {
+                    candidate = Path.Combine(dir, "python.exe");
+                }
+                catch (ArgumentException)
+                {
+                    continue;
+                }
+
+                if (!File.Exists(candidate)) continue;
+                if (candidate.IndexOf("WindowsApps", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                return candidate;
+            }
+            return null;
         }
     }
 }
