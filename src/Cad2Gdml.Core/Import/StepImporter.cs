@@ -163,7 +163,7 @@ namespace Cad2Gdml.Import
                             if (mCode.Success)
                                 eCode = mCode.Groups[1].Value;
 
-                            Match mMsg = Regex.Match(lastJson, "\"message\"\\s*:\\s*\"([^\"]*)\"");
+                            Match mMsg = Regex.Match(lastJson, "\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
                             if (mMsg.Success)
                                 eMsg = mMsg.Groups[1].Value;
                         }
@@ -171,8 +171,7 @@ namespace Cad2Gdml.Import
                         // Декодирование unicode-эскейпов в сообщении
                         if (eMsg != null)
                         {
-                            try { eMsg = Regex.Unescape(eMsg); }
-                            catch { /* оставляем как есть */ }
+                            eMsg = JsonUnescape(eMsg);
                         }
 
                         if (eMsg == null)
@@ -338,6 +337,61 @@ namespace Cad2Gdml.Import
                 }
             }
             return null;
+        }
+
+        // Декодирование JSON-эскейпов; не бросает исключений
+        private static string JsonUnescape(string s)
+        {
+            if (s == null || s.Length == 0) return s;
+            var sb = new StringBuilder(s.Length);
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (s[i] != '\\' || i + 1 >= s.Length)
+                {
+                    sb.Append(s[i]);
+                    continue;
+                }
+                char n = s[i + 1];
+                switch (n)
+                {
+                    case '"': sb.Append('"'); i++; break;
+                    case '\\': sb.Append('\\'); i++; break;
+                    case '/': sb.Append('/'); i++; break;
+                    case 'n': sb.Append('\n'); i++; break;
+                    case 'r': sb.Append('\r'); i++; break;
+                    case 't': sb.Append('\t'); i++; break;
+                    case 'b': sb.Append('\b'); i++; break;
+                    case 'f': sb.Append('\f'); i++; break;
+                    case 'u':
+                        if (i + 5 < s.Length)
+                        {
+                            int cp = 0;
+                            bool ok = true;
+                            for (int k = 0; k < 4; k++)
+                            {
+                                char h = s[i + 2 + k];
+                                int d;
+                                if (h >= '0' && h <= '9') d = h - '0';
+                                else if (h >= 'a' && h <= 'f') d = 10 + (h - 'a');
+                                else if (h >= 'A' && h <= 'F') d = 10 + (h - 'A');
+                                else { ok = false; break; }
+                                cp = cp * 16 + d;
+                            }
+                            if (ok)
+                            {
+                                sb.Append((char)cp);
+                                i += 5;
+                                break;
+                            }
+                        }
+                        sb.Append('\\');
+                        break;
+                    default:
+                        sb.Append('\\');
+                        break;
+                }
+            }
+            return sb.ToString();
         }
     }
 }
