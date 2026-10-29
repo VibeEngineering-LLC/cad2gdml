@@ -561,6 +561,29 @@ namespace Cad2Gdml.Pipeline
             var roleOpt = new RoleOptions();
             RoleAssigner.Assign(scene, roleOpt, o.CrystalName);
 
+            // Вычисляем, есть ли STEP-вход
+            bool anyStepInput = false;
+            if (o.Inputs != null)
+            {
+                for (int si = 0; si < o.Inputs.Count; si++)
+                {
+                    string inp = o.Inputs[si];
+                    if (inp != null && (inp.EndsWith(".step", StringComparison.OrdinalIgnoreCase) || inp.EndsWith(".stp", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        anyStepInput = true;
+                        break;
+                    }
+                }
+            }
+
+            bool keepOpen = o.KeepOpen || (!o.DropOpen && !o.NoRepair && anyStepInput);
+
+            if (keepOpen && !o.KeepOpen)
+            {
+                scene.Add("I_STEP_KEEP_OPEN", DiagSeverity.Info, "",
+                    "Для STEP открытые детали, которые не удалось закрыть, оставлены в сцене (как --keep-open); используйте --drop-open, чтобы исключить их.");
+            }
+
             for (int oi = scene.Parts.Count - 1; oi >= 0; oi--)
             {
                 Part op = scene.Parts[oi];
@@ -569,7 +592,7 @@ namespace Cad2Gdml.Pipeline
                 bool isKey = (op.Role == PartRole.Crystal || op.Role == PartRole.Source
                     || op.Role == PartRole.Container);
 
-                if (o.KeepOpen)
+                if (keepOpen)
                 {
                     scene.Add("W_MESH_OPEN_KEPT", DiagSeverity.Warning, op.Name,
                         "Сетка открыта — деталь оставлена как есть (Geant4 может отвергнуть).");
