@@ -328,77 +328,6 @@ namespace Cad2Gdml.App
             RaiseViewChanged();
         }
 
-        // Клип треугольника по полупространству coord <= planePos (Sutherland-Hodgman)
-        // Возвращает 0, 1 или 2 треугольника в outTris (до 6 Vec3d)
-        private static int ClipTriangle(Vec3d a, Vec3d b, Vec3d c, int axis, double planePos, Vec3d[] outTris)
-        {
-            double ca = axis == 0 ? a.X : (axis == 1 ? a.Y : a.Z);
-            double cb = axis == 0 ? b.X : (axis == 1 ? b.Y : b.Z);
-            double cc = axis == 0 ? c.X : (axis == 1 ? c.Y : c.Z);
-
-            bool aIn = ca <= planePos;
-            bool bIn = cb <= planePos;
-            bool cIn = cc <= planePos;
-
-            Vec3d[] cv = new Vec3d[4];
-            int cn = 0;
-
-            // Ребро a->b
-            if (aIn && bIn) { cv[cn++] = b; }
-            else if (aIn && !bIn)
-            {
-                double t = (planePos - ca) / (cb - ca);
-                cv[cn++] = new Vec3d(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y), a.Z + t * (b.Z - a.Z));
-            }
-            else if (!aIn && bIn)
-            {
-                double t = (planePos - ca) / (cb - ca);
-                cv[cn++] = new Vec3d(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y), a.Z + t * (b.Z - a.Z));
-                cv[cn++] = b;
-            }
-
-            // Ребро b->c
-            if (bIn && cIn) { cv[cn++] = c; }
-            else if (bIn && !cIn)
-            {
-                double t = (planePos - cb) / (cc - cb);
-                cv[cn++] = new Vec3d(b.X + t * (c.X - b.X), b.Y + t * (c.Y - b.Y), b.Z + t * (c.Z - b.Z));
-            }
-            else if (!bIn && cIn)
-            {
-                double t = (planePos - cb) / (cc - cb);
-                cv[cn++] = new Vec3d(b.X + t * (c.X - b.X), b.Y + t * (c.Y - b.Y), b.Z + t * (c.Z - b.Z));
-                cv[cn++] = c;
-            }
-
-            // Ребро c->a
-            if (cIn && aIn) { cv[cn++] = a; }
-            else if (cIn && !aIn)
-            {
-                double t = (planePos - cc) / (ca - cc);
-                cv[cn++] = new Vec3d(c.X + t * (a.X - c.X), c.Y + t * (a.Y - c.Y), c.Z + t * (a.Z - c.Z));
-            }
-            else if (!cIn && aIn)
-            {
-                double t = (planePos - cc) / (ca - cc);
-                cv[cn++] = new Vec3d(c.X + t * (a.X - c.X), c.Y + t * (a.Y - c.Y), c.Z + t * (a.Z - c.Z));
-                cv[cn++] = a;
-            }
-
-            if (cn < 3) return 0;
-
-            if (cn == 3)
-            {
-                outTris[0] = cv[0]; outTris[1] = cv[1]; outTris[2] = cv[2];
-                return 1;
-            }
-
-            // 4 вершины: fan от cv[0]
-            outTris[0] = cv[0]; outTris[1] = cv[1]; outTris[2] = cv[2];
-            outTris[3] = cv[0]; outTris[4] = cv[2]; outTris[5] = cv[3];
-            return 2;
-        }
-
         // Основной отрисовщик
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -447,6 +376,9 @@ namespace Cad2Gdml.App
 
                 int total = 0;
 
+                // Буфер клипа: выделяем один раз
+                Vec3d[] triVerts = new Vec3d[6];
+
                 for (int pi = 0; pi < _parts.Count; pi++)
                 {
                     Part part = _parts[pi];
@@ -464,12 +396,11 @@ namespace Cad2Gdml.App
                         mesh.GetTriangle(ti, out a, out b, out c);
 
                         // Клип или пропуск без клипа
-                        Vec3d[] triVerts = new Vec3d[6];
                         int nTris = 1;
 
                         if (_sectionEnabled)
                         {
-                            nTris = ClipTriangle(a, b, c, _sectionAxis, planePos, triVerts);
+                            nTris = PlaneClip.ClipTriangle(a, b, c, _sectionAxis, planePos, triVerts);
                             if (nTris == 0) continue;
                         }
                         else
