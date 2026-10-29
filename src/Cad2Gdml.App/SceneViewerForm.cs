@@ -16,6 +16,7 @@ namespace Cad2Gdml.App
         private MeshView _meshView;
         private DataGridView _grid;
         private readonly List<string> _autoMats;
+        private readonly List<string> _autoRoles;
         private readonly List<string> _rowNames;
         private readonly List<bool> _isScenePart;
         private readonly List<string> _initialExcluded;
@@ -30,6 +31,8 @@ namespace Cad2Gdml.App
 
         // Перекрывания веществ (заполняется при ОК)
         public List<KeyValuePair<string, string>> Overrides { get; }
+        // Перекрывания ролей (заполняется при ОК)
+        public List<KeyValuePair<string, string>> RoleOverrides { get; }
         // Имена исключаемых строк (заполняется при ОК)
         public List<string> Excluded { get; }
         // Изменился ли набор исключений по сравнению с начальным
@@ -41,8 +44,10 @@ namespace Cad2Gdml.App
         {
             _scene = scene;
             Overrides = new List<KeyValuePair<string, string>>();
+            RoleOverrides = new List<KeyValuePair<string, string>>();
             Excluded = new List<string>();
             _autoMats = new List<string>();
+            _autoRoles = new List<string>();
             _rowNames = new List<string>();
             _isScenePart = new List<bool>();
             _initialExcluded = excludedNames != null ? new List<string>(excludedNames) : new List<string>();
@@ -166,12 +171,16 @@ namespace Cad2Gdml.App
                 FillWeight = 45,
                 ReadOnly = true
             };
-            var colRole = new DataGridViewTextBoxColumn
+
+            // Колонка "Роль" — combo с автодополнением
+            var colRole = new DataGridViewComboBoxColumn
             {
                 HeaderText = "Роль",
                 FillWeight = 20,
-                ReadOnly = true
+                FlatStyle = FlatStyle.Flat
             };
+            colRole.Items.AddRange(new object[] { "кристалл", "источник", "контейнер", "защита", "корпус", "прочее", "—" });
+
             var colMat = new DataGridViewComboBoxColumn
             {
                 HeaderText = "Вещество",
@@ -209,13 +218,16 @@ namespace Cad2Gdml.App
                     if (!colMat.Items.Contains(matRu))
                         colMat.Items.Add(matRu);
 
+                    string roleRu = RoleToRu(p.Role);
+
                     _rowNames.Add(p.Name);
                     _autoMats.Add(matRu);
+                    _autoRoles.Add(roleRu);
                     _isScenePart.Add(true);
                     int total;
                     dupSeen.TryGetValue(p.Name, out total);
                     string shown = total > 1 ? p.Name + " [одноимённых: " + total + "; действие для всех]" : p.Name;
-                    _grid.Rows.Add(true, shown, RoleToRu(p.Role), matRu);
+                    _grid.Rows.Add(true, shown, roleRu, matRu);
                 }
             }
 
@@ -227,8 +239,10 @@ namespace Cad2Gdml.App
                     if (sceneNames.Contains(name)) continue;
                     _rowNames.Add(name);
                     _autoMats.Add("");
+                    _autoRoles.Add("—");
                     _isScenePart.Add(false);
                     int rowIdx = _grid.Rows.Add(false, name, "—", "");
+                    _grid.Rows[rowIdx].Cells[2].ReadOnly = true;
                     _grid.Rows[rowIdx].Cells[3].ReadOnly = true;
                     // Серый цвет для невыбранных
                     for (int c = 0; c < _grid.Rows[rowIdx].Cells.Count; c++)
@@ -326,6 +340,18 @@ namespace Cad2Gdml.App
             }
         }
 
+        // Перевод русского имени роли обратно в enum-имя
+        private static string RuToRoleName(string ru)
+        {
+            if (ru == "кристалл") return "Crystal";
+            if (ru == "источник") return "Source";
+            if (ru == "контейнер") return "Container";
+            if (ru == "защита") return "Shield";
+            if (ru == "корпус") return "Housing";
+            if (ru == "прочее") return "Other";
+            return null;
+        }
+
         // Мгновенная отправка чекбокса
         private void OnCurrentCellDirtyStateChanged(object sender, EventArgs e)
         {
@@ -366,12 +392,14 @@ namespace Cad2Gdml.App
             _meshView.RefreshHidden();
         }
 
-        // Режим ввода для combo
+        // Режим ввода для combo (роль + вещество)
         private void OnEditingControlShowing(object sender, DataGridViewEditingControlShowingEventArgs e)
         {
             ComboBox cmb = e.Control as ComboBox;
-            if (cmb != null)
-                cmb.DropDownStyle = ComboBoxStyle.DropDown;
+            if (cmb == null) return;
+            cmb.DropDownStyle = ComboBoxStyle.DropDown;
+            cmb.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+            cmb.AutoCompleteSource = AutoCompleteSource.ListItems;
         }
 
         // Игнорирование ошибок данных
@@ -397,13 +425,14 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Сброс значений веществ
+        // Сброс значений веществ и ролей
         private void OnReset(object sender, EventArgs e)
         {
             _suppressEvents = true;
             for (int i = 0; i < _grid.Rows.Count; i++)
             {
                 if (!_isScenePart[i]) continue;
+                _grid.Rows[i].Cells[2].Value = _autoRoles[i];
                 _grid.Rows[i].Cells[3].Value = _autoMats[i];
             }
             _suppressEvents = false;
@@ -414,6 +443,7 @@ namespace Cad2Gdml.App
         {
             Excluded.Clear();
             Overrides.Clear();
+            RoleOverrides.Clear();
 
             var excludedSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -431,11 +461,19 @@ namespace Cad2Gdml.App
                 {
                     // Только детали сцены участвуют в overrides
                     if (!_isScenePart[i]) continue;
+
+                    // Перекрывание вещества
                     string cur = _grid.Rows[i].Cells[3].Value as string;
-                    if (string.IsNullOrEmpty(cur)) continue;
-                    if (cur != _autoMats[i])
-                    {
+                    if (!string.IsNullOrEmpty(cur) && cur != _autoMats[i])
                         Overrides.Add(new KeyValuePair<string, string>("=" + _rowNames[i], MaterialNames.ToId(cur)));
+
+                    // Перекрывание роли
+                    string roleText = _grid.Rows[i].Cells[2].Value as string;
+                    if (!string.IsNullOrEmpty(roleText) && roleText != _autoRoles[i])
+                    {
+                        string roleEng = RuToRoleName(roleText);
+                        if (roleEng != null)
+                            RoleOverrides.Add(new KeyValuePair<string, string>(_rowNames[i], roleEng));
                     }
                 }
             }

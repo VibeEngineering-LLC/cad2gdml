@@ -46,6 +46,7 @@ namespace Cad2Gdml.Cli
             bool noRepair = false;
             double weldTol = 0.0;
             var matOverrides = new List<KeyValuePair<string, string>>();
+            var roleOverrides = new List<KeyValuePair<string, string>>();
 
             int idx = 0;
             while (idx < args.Length)
@@ -117,6 +118,25 @@ namespace Cad2Gdml.Cli
                         return 2;
                     }
                     matOverrides.Add(new KeyValuePair<string, string>(partName, matName));
+                }
+                else if (a == "--role")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --role."); return 2; }
+                    string rval = args[++idx];
+                    int sep = rval.IndexOf('=');
+                    if (sep <= 0 || sep >= rval.Length - 1)
+                    {
+                        Console.Error.WriteLine("Формат --role: <имя>=<роль>. Получено: " + rval);
+                        return 2;
+                    }
+                    string partName = rval.Substring(0, sep).Trim();
+                    string roleVal = rval.Substring(sep + 1).Trim();
+                    if (partName.Length == 0 || roleVal.Length == 0)
+                    {
+                        Console.Error.WriteLine("Обе части --role после trim должны быть непустыми: " + rval);
+                        return 2;
+                    }
+                    roleOverrides.Add(new KeyValuePair<string, string>(partName, roleVal));
                 }
                 else if (a == "--allow-default-material")
                 {
@@ -210,7 +230,8 @@ namespace Cad2Gdml.Cli
                 NoSplit = noSplit,
                 NoRepair = noRepair,
                 WeldTolMm = weldTol,
-                MaterialOverrides = matOverrides
+                MaterialOverrides = matOverrides,
+                RoleOverrides = (roleOverrides.Count > 0) ? roleOverrides : null
             };
 
             // Запуск конвейера
@@ -245,6 +266,7 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
             Console.WriteLine("  --weld <мм>                Допуск сшивки вершин (по умолчанию 1e-5)");
             Console.WriteLine("  --material <имя>=<вещество>  Назначить вещество деталям, в имени которых есть <имя> (повторяемый)");
+            Console.WriteLine("  --role <имя>=<роль>         Назначить роль детали: Crystal, Source, Container, Shield, Housing, Other (повторяемый)");
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
             Console.WriteLine("  --keep-open                Оставлять открытые сетки с предупреждением");

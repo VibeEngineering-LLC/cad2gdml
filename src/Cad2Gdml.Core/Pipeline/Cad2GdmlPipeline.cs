@@ -36,6 +36,7 @@ namespace Cad2Gdml.Pipeline
         public List<KeyValuePair<string, string>> MaterialOverrides;
         public bool NoRepair;
         public List<string> ExcludeParts;
+        public List<KeyValuePair<string, string>> RoleOverrides;
     }
 
     // Результат конвейера
@@ -560,6 +561,39 @@ namespace Cad2Gdml.Pipeline
         {
             var roleOpt = new RoleOptions();
             RoleAssigner.Assign(scene, roleOpt, o.CrystalName);
+
+            // Ручные роли (RoleOverrides)
+            if (o.RoleOverrides != null)
+            {
+                for (int ri = 0; ri < o.RoleOverrides.Count; ri++)
+                {
+                    string key = o.RoleOverrides[ri].Key;
+                    string val = o.RoleOverrides[ri].Value;
+                    if (key == null) continue;
+
+                    Part target = null;
+                    for (int pi = 0; pi < scene.Parts.Count; pi++)
+                    {
+                        if (string.Equals(scene.Parts[pi].Name, key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            target = scene.Parts[pi];
+                            break;
+                        }
+                    }
+                    if (target == null) continue;
+
+                    PartRole role;
+                    if (Enum.TryParse<PartRole>(val, true, out role))
+                    {
+                        target.Role = role;
+                        scene.Add("I_ROLE_MANUAL", DiagSeverity.Info, target.Name, "Роль задана вручную: " + val);
+                    }
+                    else
+                    {
+                        scene.Add("W_ROLE_UNKNOWN", DiagSeverity.Warning, target.Name, "Неизвестная роль: " + val);
+                    }
+                }
+            }
 
             // Вычисляем, есть ли STEP-вход
             bool anyStepInput = false;

@@ -63,6 +63,7 @@ namespace Cad2Gdml.App
         // Новое: результат, переопределения веществ
         private PipelineResult _lastResult;
         private List<KeyValuePair<string, string>> _matOverrides = new List<KeyValuePair<string, string>>();
+        private List<KeyValuePair<string, string>> _roleOverrides = new List<KeyValuePair<string, string>>();
         private List<string> _excluded = new List<string>();
 
         public MainForm()
@@ -348,6 +349,7 @@ namespace Cad2Gdml.App
         private void InvalidateOverrides()
         {
             _matOverrides.Clear();
+            _roleOverrides.Clear();
             _excluded.Clear();
             _btnMaterials.Enabled = false;
         }
@@ -508,6 +510,10 @@ namespace Cad2Gdml.App
             // Переопределения веществ
             if (_matOverrides.Count > 0)
                 opts.MaterialOverrides = new List<KeyValuePair<string, string>>(_matOverrides);
+
+            // Переопределения ролей
+            if (_roleOverrides.Count > 0)
+                opts.RoleOverrides = new List<KeyValuePair<string, string>>(_roleOverrides);
 
             // Исключаемые детали
             if (_excluded.Count > 0)
@@ -697,8 +703,29 @@ namespace Cad2Gdml.App
                         }
                     }
 
+                    // Слияние переопределений ролей
+                    if (dlg.RoleOverrides.Count > 0)
+                    {
+                        for (int i = 0; i < dlg.RoleOverrides.Count; i++)
+                        {
+                            string key = dlg.RoleOverrides[i].Key;
+                            bool found = false;
+                            for (int j = 0; j < _roleOverrides.Count; j++)
+                            {
+                                if (_roleOverrides[j].Key == key)
+                                {
+                                    _roleOverrides[j] = dlg.RoleOverrides[i];
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                _roleOverrides.Add(dlg.RoleOverrides[i]);
+                        }
+                    }
+
                     // Пересчёт если есть переопределения или изменился набор исключений
-                    if (dlg.Overrides.Count > 0 || dlg.ExclusionChanged)
+                    if (dlg.Overrides.Count > 0 || dlg.RoleOverrides.Count > 0 || dlg.ExclusionChanged)
                         OnConvert(null, EventArgs.Empty);
                 }
             }
