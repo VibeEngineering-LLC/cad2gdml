@@ -43,6 +43,7 @@ namespace Cad2Gdml.Cli
             bool dropOpen = false;
             bool keepOpen = false;
             bool noSplit = false;
+            bool noRepair = false;
             double weldTol = 0.0;
             var matOverrides = new List<KeyValuePair<string, string>>();
 
@@ -133,6 +134,10 @@ namespace Cad2Gdml.Cli
                 {
                     noSplit = true;
                 }
+                else if (a == "--no-repair")
+                {
+                    noRepair = true;
+                }
                 else if (a.Length > 2 && a[0] == '-' && a[1] == '-')
                 {
                     Console.Error.WriteLine("Неизвестный параметр: " + a);
@@ -203,6 +208,7 @@ namespace Cad2Gdml.Cli
                 DropOpen = dropOpen,
                 KeepOpen = keepOpen,
                 NoSplit = noSplit,
+                NoRepair = noRepair,
                 WeldTolMm = weldTol,
                 MaterialOverrides = matOverrides
             };
@@ -243,6 +249,7 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
             Console.WriteLine("  --keep-open                Оставлять открытые сетки с предупреждением");
             Console.WriteLine("  --no-split                 Не разбивать деталь на связные тела");
+            Console.WriteLine("  --no-repair                Не закрывать дыры в открытых сетках");
             Console.WriteLine("  --help, -h                 Эта справка");
         }
 

@@ -34,6 +34,8 @@ namespace Cad2Gdml.Pipeline
         public bool NoSplit;
         public double WeldTolMm;
         public List<KeyValuePair<string, string>> MaterialOverrides;
+        public bool NoRepair;
+        public List<string> ExcludeParts;
     }
 
     // Результат конвейера
@@ -255,12 +257,37 @@ namespace Cad2Gdml.Pipeline
                 SplitConnectedComponents(scene);
             }
 
+            // Исключение деталей по имени
+            if (o.ExcludeParts != null && o.ExcludeParts.Count > 0)
+            {
+                bool[] matched = new bool[o.ExcludeParts.Count];
+                for (int i = scene.Parts.Count - 1; i >= 0; i--)
+                {
+                    Part p = scene.Parts[i];
+                    for (int ei = 0; ei < o.ExcludeParts.Count; ei++)
+                    {
+                        if (string.Equals(p.Name, o.ExcludeParts[ei], StringComparison.OrdinalIgnoreCase))
+                        {
+                            scene.Add("I_PART_EXCLUDED", DiagSeverity.Info, p.Name, "деталь исключена пользователем");
+                            scene.Parts.RemoveAt(i);
+                            matched[ei] = true;
+                            break;
+                        }
+                    }
+                }
+                for (int ei = 0; ei < o.ExcludeParts.Count; ei++)
+                {
+                    if (!matched[ei])
+                        scene.Add("W_EXCLUDE_UNUSED", DiagSeverity.Warning, "", "исключаемая деталь не найдена: " + o.ExcludeParts[ei]);
+                }
+            }
+
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
                 if (p.Mesh == null) continue;
 
-                var topo = MeshTopology.Analyze(p.Mesh);
+                TopologyReport topo = MeshTopology.Analyze(p.Mesh);
 
                 if (topo.NonManifoldEdges > 0)
                 {
@@ -279,6 +306,35 @@ namespace Cad2Gdml.Pipeline
                     scene.Add("E_MESH_ORIENT", DiagSeverity.Error, p.Name,
                         "Несогласованная ориентация: " + topo.InconsistentEdges.ToString(CultureInfo.InvariantCulture));
                     return false;
+                }
+
+                // Попытка закрыть дыры
+                if (topo.OpenEdges > 0 && !o.NoRepair)
+                {
+                    int filled, skipped;
+                    Mesh repaired = HoleFiller.Fill(p.Mesh, 2000, out filled, out skipped);
+                    if (repaired != null)
+                    {
+                        TopologyReport newTopo = MeshTopology.Analyze(repaired);
+                        if (newTopo.OpenEdges == 0 && newTopo.InconsistentEdges == 0
+                            && Math.Abs(MeshProperties.SignedVolume(repaired)) > 1e-3)
+                        {
+                            p.Mesh = repaired;
+                            topo = newTopo;
+                            scene.Add("W_MESH_REPAIRED", DiagSeverity.Warning, p.Name,
+                                "закрыто дыр: " + filled.ToString(CultureInfo.InvariantCulture) + "; проверьте деталь на эскизе");
+                        }
+                        else
+                        {
+                            scene.Add("W_MESH_REPAIR_FAILED", DiagSeverity.Warning, p.Name,
+                                "дыры закрыть не удалось (деталь — тонкая оболочка или сложный контур)");
+                        }
+                    }
+                    else
+                    {
+                        scene.Add("W_MESH_REPAIR_FAILED", DiagSeverity.Warning, p.Name,
+                            "дыры закрыть не удалось (деталь — тонкая оболочка или сложный контур)");
+                    }
                 }
 
                 if (topo.OpenEdges > 0)

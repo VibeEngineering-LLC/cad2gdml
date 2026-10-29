@@ -189,6 +189,7 @@ namespace Cad2Gdml.Tests
             opt.OutDir = dir;
             opt.BaseName = "out";
             opt.AllowDefaultMaterial = true;
+            opt.NoRepair = true;
 
             var result = Cad2GdmlPipeline.Run(opt);
             Assert(result.ExitCode == 3, "exit=" + result.ExitCode.ToString(CultureInfo.InvariantCulture));

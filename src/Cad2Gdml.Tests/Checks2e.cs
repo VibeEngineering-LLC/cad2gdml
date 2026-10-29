@@ -36,6 +36,7 @@ namespace Cad2Gdml.Tests
             opt.DropOpen = dropOpen;
             opt.KeepOpen = keepOpen;
             opt.NoSplit = noSplit;
+            opt.NoRepair = true;
             return Cad2GdmlPipeline.Run(opt);
         }
 

@@ -62,6 +62,7 @@ namespace Cad2Gdml.App
         // Новое: результат, переопределения веществ
         private PipelineResult _lastResult;
         private List<KeyValuePair<string, string>> _matOverrides = new List<KeyValuePair<string, string>>();
+        private List<string> _excluded = new List<string>();
 
         public MainForm()
         {
@@ -73,8 +74,8 @@ namespace Cad2Gdml.App
         private void BuildUi()
         {
             this.Text = "CAD → GDML";
-            this.ClientSize = new Size(1120, 740);
-            this.MinimumSize = new Size(1100, 600);
+            this.ClientSize = new Size(1260, 780);
+            this.MinimumSize = new Size(1240, 640);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Font = new Font("Segoe UI", 9f);
 
@@ -153,6 +154,8 @@ namespace Cad2Gdml.App
             _btnConvert.Text = "Конвертировать";
             _btnConvert.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
             _btnConvert.Size = new Size(150, 34);
+            _btnConvert.MinimumSize = new Size(150, 34);
+            _btnConvert.Anchor = AnchorStyles.Top | AnchorStyles.Left;
             _btnConvert.Margin = new Padding(4);
             _btnConvert.Click += OnConvert;
 
@@ -173,7 +176,7 @@ namespace Cad2Gdml.App
             _chkDropOpen.Text = "Пропускать открытые детали";
             _chkDropOpen.AutoSize = true;
             _chkDropOpen.Margin = new Padding(4);
-            _chkDropOpen.Checked = true;
+            _chkDropOpen.Checked = false;
 
             _btnOpenFolder = new Button();
             _btnOpenFolder.Text = "Открыть папку";
@@ -183,8 +186,8 @@ namespace Cad2Gdml.App
             _btnOpenFolder.Click += OnOpenFolder;
 
             _btnMaterials = new Button();
-            _btnMaterials.Text = "Материалы…";
-            _btnMaterials.Size = new Size(110, 28);
+            _btnMaterials.Text = "Сцена и вещества…";
+            _btnMaterials.Size = new Size(140, 28);
             _btnMaterials.Enabled = false;
             _btnMaterials.Margin = new Padding(4);
             _btnMaterials.Click += OnMaterials;
@@ -340,10 +343,11 @@ namespace Cad2Gdml.App
             InvalidateOverrides();
         }
 
-        // Сброс переопределений при изменении входов
+        // Сброс переопределений и исключений при изменении входов
         private void InvalidateOverrides()
         {
             _matOverrides.Clear();
+            _excluded.Clear();
             _btnMaterials.Enabled = false;
         }
 
@@ -516,6 +520,10 @@ namespace Cad2Gdml.App
             if (_matOverrides.Count > 0)
                 opts.MaterialOverrides = new List<KeyValuePair<string, string>>(_matOverrides);
 
+            // Исключаемые детали
+            if (_excluded.Count > 0)
+                opts.ExcludeParts = new List<string>(_excluded);
+
             _btnOpenFolder.Enabled = false;
             SetControlsEnabled(false);
             SetStatus("Конвертация…", true);
@@ -665,177 +673,43 @@ namespace Cad2Gdml.App
             _txtReport.Text = sb.ToString();
         }
 
-        // --- Обработчик «Материалы…» ---
+        // Обработчик «Сцена и вещества…»
         private void OnMaterials(object sender, EventArgs e)
         {
-            if (_lastResult == null || _lastResult.Scene == null || _lastResult.Scene.Parts == null)
+            if (_lastResult == null || _lastResult.Scene == null)
                 return;
 
-            var dlg = new MaterialsDialog(_lastResult.Scene.Parts);
-            if (dlg.ShowDialog(this) != DialogResult.OK)
-                return;
-
-            // Собираем переопределения из изменений
-            var overrides = new List<KeyValuePair<string, string>>();
-            for (int i = 0; i < dlg.Rows.Count; i++)
+            using (var dlg = new SceneViewerForm(_lastResult.Scene, _excluded))
             {
-                MaterialsDialog.RowInfo r = dlg.Rows[i];
-                if (string.IsNullOrEmpty(r.CurrentMaterial)) continue;
-                if (r.CurrentMaterial == r.InitialMaterial) continue;
-                overrides.Add(new KeyValuePair<string, string>("=" + r.InitialName, r.CurrentMaterial));
-            }
-
-            _matOverrides = overrides;
-
-            if (_matOverrides.Count > 0)
-                OnConvert(null, EventArgs.Empty);
-        }
-
-        // Вложенный диалог назначения веществ
-        private sealed class MaterialsDialog : Form
-        {
-            public class RowInfo
-            {
-                public string InitialName;
-                public string InitialMaterial;
-                public string CurrentMaterial;
-            }
-
-            public List<RowInfo> Rows;
-            private DataGridView _grid;
-            private List<string> _initialMats;
-
-            public MaterialsDialog(List<Part> parts)
-            {
-                this.Text = "Назначение веществ";
-                this.ClientSize = new Size(720, 560);
-                this.StartPosition = FormStartPosition.CenterParent;
-                this.Font = new Font("Segoe UI", 9f);
-                this.MinimizeBox = false;
-                this.MaximizeBox = false;
-
-                Rows = new List<RowInfo>();
-                _initialMats = new List<string>();
-
-                // Заполняем строки
-                for (int i = 0; i < parts.Count; i++)
+                if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
-                    Part p = parts[i];
-                    string mat = p.Material ?? "";
-                    var ri = new RowInfo();
-                    ri.InitialName = p.Name ?? "";
-                    ri.InitialMaterial = mat;
-                    ri.CurrentMaterial = mat;
-                    Rows.Add(ri);
-                    _initialMats.Add(mat);
-                }
+                    // Обновляем набор исключённых
+                    _excluded = new List<string>(dlg.Excluded);
 
-                // DataGridView
-                _grid = new DataGridView();
-                _grid.Dock = DockStyle.Fill;
-                _grid.AllowUserToAddRows = false;
-                _grid.RowHeadersVisible = false;
-                _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+                    // Слияние переопределений веществ
+                    if (dlg.Overrides.Count > 0)
+                    {
+                        for (int i = 0; i < dlg.Overrides.Count; i++)
+                        {
+                            string key = dlg.Overrides[i].Key;
+                            bool found = false;
+                            for (int j = 0; j < _matOverrides.Count; j++)
+                            {
+                                if (_matOverrides[j].Key == key)
+                                {
+                                    _matOverrides[j] = dlg.Overrides[i];
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                _matOverrides.Add(dlg.Overrides[i]);
+                        }
+                    }
 
-                var colPart = new DataGridViewTextBoxColumn();
-                colPart.HeaderText = "Деталь";
-                colPart.ReadOnly = true;
-                colPart.Name = "colPart";
-
-                var colRole = new DataGridViewTextBoxColumn();
-                colRole.HeaderText = "Роль";
-                colRole.ReadOnly = true;
-                colRole.Name = "colRole";
-
-                var colMat = new DataGridViewComboBoxColumn();
-                colMat.HeaderText = "Вещество";
-                colMat.Name = "colMat";
-                colMat.FlatStyle = FlatStyle.Flat;
-
-                // Заполняем Items
-                var lib = MaterialLibrary.Default();
-                var keys = new List<string>();
-                foreach (string k in lib.Materials.Keys)
-                    keys.Add(k);
-                string[] extras = { "G4_AIR", "G4_Al", "G4_Fe", "G4_Cu", "G4_Pb", "G4_Si", "G4_Sn", "G4_WATER", "G4_Galactic", "G4_POLYETHYLENE", "G4_PLEXIGLASS", "G4_STAINLESS-STEEL" };
-                for (int ei = 0; ei < extras.Length; ei++)
-                {
-                    if (!keys.Contains(extras[ei]))
-                        keys.Add(extras[ei]);
-                }
-                keys.Sort(StringComparer.Ordinal);
-                for (int ki = 0; ki < keys.Count; ki++)
-                    colMat.Items.Add(keys[ki]);
-
-                _grid.Columns.Add(colPart);
-                _grid.Columns.Add(colRole);
-                _grid.Columns.Add(colMat);
-
-                // Игнор DataError (значение вне списка)
-                _grid.DataError += delegate { };
-
-                // Allow typing: DropDown style
-                _grid.EditingControlShowing += OnEditingControlShowing;
-
-                // Заполняем строки
-                for (int i = 0; i < parts.Count; i++)
-                {
-                    Part p = parts[i];
-                    int row = _grid.Rows.Add(p.Name ?? "", p.Role.ToString(), p.Material ?? "");
-                }
-
-                // Нижняя панель
-                var bottomPanel = new Panel();
-                bottomPanel.Dock = DockStyle.Bottom;
-                bottomPanel.Height = 40;
-                bottomPanel.Padding = new Padding(8);
-
-                var btnOk = new Button();
-                btnOk.Text = "Применить и пересчитать";
-                btnOk.DialogResult = DialogResult.OK;
-                btnOk.Size = new Size(180, 28);
-                btnOk.Anchor = AnchorStyles.Right;
-
-                var btnReset = new Button();
-                btnReset.Text = "Сбросить";
-                btnReset.Size = new Size(80, 28);
-                btnReset.Anchor = AnchorStyles.Right;
-                btnReset.Click += OnReset;
-
-                var btnCancel = new Button();
-                btnCancel.Text = "Отмена";
-                btnCancel.DialogResult = DialogResult.Cancel;
-                btnCancel.Size = new Size(80, 28);
-                btnCancel.Anchor = AnchorStyles.Right;
-
-                bottomPanel.Controls.Add(btnOk);
-                bottomPanel.Controls.Add(btnReset);
-                bottomPanel.Controls.Add(btnCancel);
-
-                // Раскладка кнопок справа
-                this.AcceptButton = btnOk;
-                this.CancelButton = btnCancel;
-
-                this.Controls.Add(_grid);
-                this.Controls.Add(bottomPanel);
-            }
-
-            private void OnEditingControlShowing(object sender, DataGridViewEditingControlShowingEventArgs e)
-            {
-                if (e.Control is ComboBox)
-                {
-                    var cb = (ComboBox)e.Control;
-                    cb.DropDownStyle = ComboBoxStyle.DropDown;
-                }
-            }
-
-            // Сбросить все значения к начальным
-            private void OnReset(object sender, EventArgs e)
-            {
-                for (int i = 0; i < Rows.Count; i++)
-                {
-                    Rows[i].CurrentMaterial = _initialMats[i];
-                    _grid.Rows[i].Cells[2].Value = _initialMats[i];
+                    // Пересчёт если есть переопределения или изменился набор исключений
+                    if (dlg.Overrides.Count > 0 || dlg.ExclusionChanged)
+                        OnConvert(null, EventArgs.Empty);
                 }
             }
         }

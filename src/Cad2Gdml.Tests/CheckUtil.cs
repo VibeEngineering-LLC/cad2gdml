@@ -22,6 +22,7 @@ namespace Cad2Gdml.Tests
             opt.FrontSign = front;
             opt.AllowDefaultMaterial = allowDefault;
             opt.DropOpen = dropOpen;
+            opt.NoRepair = true; // тесты открытых сеток проверяют поведение без автозаделки
             opt.OutDir = dir;
             opt.BaseName = "o";
             return Cad2GdmlPipeline.Run(opt);
