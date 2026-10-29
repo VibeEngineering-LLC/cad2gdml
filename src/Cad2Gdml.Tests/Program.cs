@@ -38,6 +38,7 @@ namespace Cad2Gdml.Tests
             checks.AddRange(Checks2b.All(_tempDir));
             checks.AddRange(Checks2c.All(_tempDir));
             checks.AddRange(Checks2d.All(_tempDir));
+            checks.AddRange(ChecksGui.All(_tempDir));
 
             foreach (var kv in checks)
             {
@@ -266,7 +267,8 @@ namespace Cad2Gdml.Tests
             opt.AllowDefaultMaterial = true;
 
             var result = Cad2GdmlPipeline.Run(opt);
-            Assert(result.ExitCode == 4, "exit=" + result.ExitCode.ToString(CultureInfo.InvariantCulture));
+            Assert(result.ExitCode == 0, "exit=" + result.ExitCode.ToString(CultureInfo.InvariantCulture));
+            Assert(result.Diagnostics.Exists(d => d.Code == "W_NO_CRYSTAL"), "нет W_NO_CRYSTAL");
         }
 
         // 10. PNG существует и > 1000 байт

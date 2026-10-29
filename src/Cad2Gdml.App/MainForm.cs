@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -29,12 +30,14 @@ namespace Cad2Gdml.App
         // Контролы верхней панели
         private Button _btnAddFiles;
         private Button _btnAddFolder;
+        private Button _btnRemove;
         private ComboBox _cmbUnit;
         private TextBox _txtCrystal;
         private ComboBox _cmbFront;
         private TextBox _txtOutDir;
         private Button _btnBrowseOut;
         private Button _btnConvert;
+        private Button _btnOpenFolder;
         private CheckBox _chkAllowDefault;
         private CheckBox _chkDropOpen;
 
@@ -47,8 +50,11 @@ namespace Cad2Gdml.App
         // Фоновая работа
         private BackgroundWorker _worker;
 
-        // Последняя папка (запоминаем в форме)
+        // Последняя папка
         private string _lastFolder;
+
+        // Тултип для списка
+        private ToolTip _tipList;
 
         public MainForm()
         {
@@ -60,94 +66,144 @@ namespace Cad2Gdml.App
         private void BuildUi()
         {
             this.Text = "CAD → GDML";
-            this.ClientSize = new Size(1060, 740);
+            this.ClientSize = new Size(1120, 740);
+            this.MinimumSize = new Size(960, 600);
             this.StartPosition = FormStartPosition.CenterScreen;
+            this.Font = new Font("Segoe UI", 9f);
 
-            // --- Верхняя панель (2 ряда) ---
-            var topPanel = new Panel();
-            topPanel.Dock = DockStyle.Top;
-            topPanel.Height = 74;
-            topPanel.Padding = new Padding(6, 6, 6, 4);
+            // --- Верхняя панель: TableLayoutPanel ---
+            var topTable = new TableLayoutPanel();
+            topTable.Dock = DockStyle.Top;
+            topTable.AutoSize = true;
+            topTable.ColumnCount = 9;
+            topTable.RowCount = 3;
+            topTable.Padding = new Padding(8);
+            topTable.CellBorderStyle = TableLayoutPanelCellBorderStyle.None;
 
-            _btnAddFiles = MakeButton("Добавить файлы…", 8, 6, 124, 26, OnAddFiles);
-            _btnAddFolder = MakeButton("Добавить папку…", 8, 38, 124, 26, OnAddFolder);
+            // Столбцы — все авто, последний процентный
+            for (int i = 0; i < 9; i++)
+                topTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            topTable.ColumnStyles[7] = new ColumnStyle(SizeType.Percent, 100f);
 
+            // Строки
+            topTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            topTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            topTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            // === Ряд 0: кнопки + единицы + кристалл + фронт ===
+            _btnAddFiles = MakeButton("Добавить файлы…", OnAddFiles);
+            _btnAddFiles.Size = new Size(130, 30);
+
+            _btnAddFolder = MakeButton("Добавить папку…", OnAddFolder);
+            _btnAddFolder.Size = new Size(130, 30);
+
+            _btnRemove = MakeButton("Убрать", OnRemoveSelected);
+            _btnRemove.Size = new Size(130, 30);
+
+            var lblUnit = MakeLabel("Единицы:");
             _cmbUnit = new ComboBox();
             _cmbUnit.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbUnit.Items.AddRange(new object[] { "мм", "см", "м", "дюйм" });
             _cmbUnit.SelectedIndex = 0;
-            _cmbUnit.Location = new Point(146, 6);
-            _cmbUnit.Size = new Size(56, 24);
-            AddLabel(topPanel, "Ед.", 146, 34);
+            _cmbUnit.Width = 90;
+            _cmbUnit.Margin = new Padding(4);
 
-            // Замечание про 3MF
-            var lblUnitNote = new Label();
-            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF)";
-            lblUnitNote.Font = new Font(this.Font, FontStyle.Italic);
-            lblUnitNote.AutoSize = true;
-            lblUnitNote.Location = new Point(204, 38);
-            topPanel.Controls.Add(lblUnitNote);
-
+            var lblCrystal = MakeLabel("Кристалл:");
             _txtCrystal = new TextBox();
-            _txtCrystal.Location = new Point(330, 6);
-            _txtCrystal.Size = new Size(110, 24);
-            AddLabel(topPanel, "Кристалл:", 330, 34);
+            _txtCrystal.Width = 130;
+            _txtCrystal.Margin = new Padding(4);
 
+            var lblFront = MakeLabel("Фронт:");
             _cmbFront = new ComboBox();
             _cmbFront.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbFront.Items.AddRange(new object[] { "auto", "+z", "-z" });
             _cmbFront.SelectedIndex = 0;
-            _cmbFront.Location = new Point(452, 6);
-            _cmbFront.Size = new Size(56, 24);
-            AddLabel(topPanel, "Фронт:", 452, 34);
+            _cmbFront.Width = 70;
+            _cmbFront.Margin = new Padding(4);
 
+            topTable.Controls.Add(_btnAddFiles, 0, 0);
+            topTable.Controls.Add(_btnAddFolder, 1, 0);
+            topTable.Controls.Add(_btnRemove, 2, 0);
+            topTable.Controls.Add(lblUnit, 3, 0);
+            topTable.Controls.Add(_cmbUnit, 4, 0);
+            topTable.Controls.Add(lblCrystal, 5, 0);
+            topTable.Controls.Add(_txtCrystal, 6, 0);
+            topTable.Controls.Add(lblFront, 7, 0);
+            topTable.Controls.Add(_cmbFront, 8, 0);
+
+            // === Ряд 1: папка вывода + обзор + конвертировать (rowspan 2) ===
+            var lblOutDir = MakeLabel("Папка вывода:");
             _txtOutDir = new TextBox();
-            _txtOutDir.Location = new Point(522, 6);
-            _txtOutDir.Size = new Size(190, 24);
-            AddLabel(topPanel, "Папка вывода:", 522, 34);
+            _txtOutDir.Margin = new Padding(4);
+            _txtOutDir.Anchor = AnchorStyles.Left | AnchorStyles.Right;
 
-            _btnBrowseOut = MakeButton("Обзор…", 716, 6, 56, 26, OnBrowseOut);
+            _btnBrowseOut = MakeButton("Обзор…", OnBrowseOut);
+            _btnBrowseOut.Size = new Size(60, 26);
 
             _btnConvert = new Button();
             _btnConvert.Text = "Конвертировать";
-            _btnConvert.Location = new Point(786, 6);
-            _btnConvert.Size = new Size(130, 56);
-            _btnConvert.Font = new Font(this.Font, FontStyle.Bold);
+            _btnConvert.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            _btnConvert.Size = new Size(150, 34);
+            _btnConvert.Margin = new Padding(4);
             _btnConvert.Click += OnConvert;
 
-            // Чекбоксы второго ряда
+            topTable.Controls.Add(lblOutDir, 0, 1);
+            topTable.SetColumnSpan(_txtOutDir, 6);
+            topTable.Controls.Add(_txtOutDir, 1, 1);
+            topTable.Controls.Add(_btnBrowseOut, 7, 1);
+            topTable.SetRowSpan(_btnConvert, 2);
+            topTable.Controls.Add(_btnConvert, 8, 1);
+
+            // === Ряд 2: чекбоксы + открыть папку ===
             _chkAllowDefault = new CheckBox();
             _chkAllowDefault.Text = "Разрешить вещество по умолчанию";
-            _chkAllowDefault.Checked = false;
-            _chkAllowDefault.Location = new Point(330, 38);
             _chkAllowDefault.AutoSize = true;
+            _chkAllowDefault.Margin = new Padding(4);
 
             _chkDropOpen = new CheckBox();
             _chkDropOpen.Text = "Пропускать открытые детали";
-            _chkDropOpen.Checked = false;
-            _chkDropOpen.Location = new Point(560, 38);
             _chkDropOpen.AutoSize = true;
+            _chkDropOpen.Margin = new Padding(4);
 
-            topPanel.Controls.Add(_btnAddFiles);
-            topPanel.Controls.Add(_btnAddFolder);
-            topPanel.Controls.Add(_cmbUnit);
-            topPanel.Controls.Add(_txtCrystal);
-            topPanel.Controls.Add(_cmbFront);
-            topPanel.Controls.Add(_txtOutDir);
-            topPanel.Controls.Add(_btnBrowseOut);
-            topPanel.Controls.Add(_btnConvert);
-            topPanel.Controls.Add(_chkAllowDefault);
-            topPanel.Controls.Add(_chkDropOpen);
+            _btnOpenFolder = new Button();
+            _btnOpenFolder.Text = "Открыть папку";
+            _btnOpenFolder.Size = new Size(110, 28);
+            _btnOpenFolder.Enabled = false;
+            _btnOpenFolder.Margin = new Padding(4);
+            _btnOpenFolder.Click += OnOpenFolder;
+
+            topTable.SetColumnSpan(_chkAllowDefault, 3);
+            topTable.Controls.Add(_chkAllowDefault, 0, 2);
+            topTable.SetColumnSpan(_chkDropOpen, 3);
+            topTable.Controls.Add(_chkDropOpen, 3, 2);
+            topTable.SetColumnSpan(_btnOpenFolder, 2);
+            topTable.Controls.Add(_btnOpenFolder, 6, 2);
+
+            // --- Подпись про 3MF ---
+            var lblUnitNote = new Label();
+            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF)";
+            lblUnitNote.Font = new Font("Segoe UI", 9f, FontStyle.Italic);
+            lblUnitNote.AutoSize = true;
+            lblUnitNote.Dock = DockStyle.Top;
+            lblUnitNote.Padding = new Padding(8, 0, 8, 4);
+            lblUnitNote.ForeColor = Color.Gray;
 
             // --- Левая панель: список входов ---
             var leftPanel = new Panel();
             leftPanel.Dock = DockStyle.Left;
-            leftPanel.Width = 220;
+            leftPanel.Width = 240;
             _lstInputs = new ListBox();
             _lstInputs.Dock = DockStyle.Fill;
             _lstInputs.DrawMode = DrawMode.OwnerDrawFixed;
             _lstInputs.DrawItem += OnDrawItem;
+            _lstInputs.SelectionMode = SelectionMode.MultiExtended;
+            _lstInputs.KeyDown += OnLstKeyDown;
+            _lstInputs.SelectedIndexChanged += OnLstSelectionChanged;
             leftPanel.Controls.Add(_lstInputs);
+
+            // Тултип для списка
+            _tipList = new ToolTip();
+            _tipList.InitialDelay = 400;
 
             // --- Центр: картинка ---
             _picSketch = new PictureBox();
@@ -176,42 +232,83 @@ namespace Cad2Gdml.App
             _lblStatus.Text = "Готово.";
             _lblStatus.BorderStyle = BorderStyle.FixedSingle;
 
-            // Порядок добавления: Fill → Bottom → Left → Top
+            // Порядок: Fill → Bottom → Left → Top (topTable последним)
             this.Controls.Add(_picSketch);
             this.Controls.Add(bottomPanel);
             this.Controls.Add(_lblStatus);
             this.Controls.Add(leftPanel);
-            this.Controls.Add(topPanel);
+            this.Controls.Add(lblUnitNote);
+            this.Controls.Add(topTable);
         }
 
         // Фабрика кнопки
-        private Button MakeButton(string text, int x, int y, int w, int h, EventHandler handler)
+        private Button MakeButton(string text, EventHandler handler)
         {
             var b = new Button();
             b.Text = text;
-            b.Location = new Point(x, y);
-            b.Size = new Size(w, h);
+            b.Margin = new Padding(4);
             b.Click += handler;
             return b;
         }
 
-        // Короткая подпись
-        private void AddLabel(Panel parent, string text, int x, int y)
+        // Фабрика подписи
+        private Label MakeLabel(string text)
         {
             var l = new Label();
             l.Text = text;
-            l.Location = new Point(x, y);
             l.AutoSize = true;
-            parent.Controls.Add(l);
+            l.TextAlign = ContentAlignment.MiddleLeft;
+            l.Anchor = AnchorStyles.Left;
+            l.Margin = new Padding(4);
+            return l;
         }
 
-        // Отрисовка строки списка
+        // Отрисовка строки списка (короткое имя)
         private void OnDrawItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0) return;
             string s = (string)_lstInputs.Items[e.Index];
             e.DrawBackground();
-            e.Graphics.DrawString(s, e.Font, Brushes.Black, e.Bounds);
+            string display = Path.GetFileName(s);
+            e.Graphics.DrawString(display, e.Font, Brushes.Black, e.Bounds);
+        }
+
+        // Тултип: полный путь выбранного элемента
+        private void OnLstSelectionChanged(object sender, EventArgs e)
+        {
+            if (_lstInputs.SelectedIndex >= 0)
+            {
+                string path = (string)_lstInputs.Items[_lstInputs.SelectedIndex];
+                _tipList.Show(path, _lstInputs, _lstInputs.ClientSize.Width, 0, 3000);
+            }
+        }
+
+        // Delete key — удалить выбранные
+        private void OnLstKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Delete)
+            {
+                RemoveSelectedItems();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        // Удаление выбранных элементов списка
+        private void RemoveSelectedItems()
+        {
+            var toRemove = new List<int>();
+            for (int i = 0; i < _lstInputs.Items.Count; i++)
+            {
+                if (_lstInputs.GetSelected(i))
+                    toRemove.Add(i);
+            }
+            if (toRemove.Count == 0) return;
+
+            for (int i = toRemove.Count - 1; i >= 0; i--)
+                _lstInputs.Items.RemoveAt(toRemove[i]);
+
+            _lstInputs.SelectedIndex = -1;
         }
 
         // Фоновый воркер
@@ -228,17 +325,23 @@ namespace Cad2Gdml.App
         {
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf|STL|*.stl|OBJ|*.obj|3MF|*.3mf|Все|*.*";
+                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp|STL|*.stl|OBJ|*.obj|3MF|*.3mf|STEP|*.step;*.stp|Все|*.*";
                 dlg.Multiselect = true;
                 if (!string.IsNullOrEmpty(_lastFolder) && Directory.Exists(_lastFolder))
                     dlg.InitialDirectory = _lastFolder;
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
+                    bool firstAdded = _lstInputs.Items.Count == 0;
                     foreach (string f in dlg.FileNames)
                     {
                         if (!_lstInputs.Items.Contains(f))
+                        {
                             _lstInputs.Items.Add(f);
+                            CheckStepWarning(f);
+                        }
                     }
+                    if (firstAdded)
+                        AutoFillOutDir();
                     _lastFolder = Path.GetDirectoryName(dlg.FileName);
                 }
             }
@@ -254,11 +357,17 @@ namespace Cad2Gdml.App
                 {
                     _lastFolder = dlg.SelectedPath;
                     string dir = dlg.SelectedPath;
+                    bool firstAdded = _lstInputs.Items.Count == 0;
                     foreach (string file in SafeGetFiles(dir))
                     {
                         if (!_lstInputs.Items.Contains(file))
+                        {
                             _lstInputs.Items.Add(file);
+                            CheckStepWarning(file);
+                        }
                     }
+                    if (firstAdded)
+                        AutoFillOutDir();
                 }
             }
         }
@@ -277,6 +386,27 @@ namespace Cad2Gdml.App
             }
         }
 
+        // Кнопка «Убрать» — удалить выбранные
+        private void OnRemoveSelected(object sender, EventArgs e)
+        {
+            RemoveSelectedItems();
+        }
+
+        // Кнопка «Открыть папку»
+        private void OnOpenFolder(object sender, EventArgs e)
+        {
+            string outDir = _txtOutDir.Text.Trim();
+            if (string.IsNullOrEmpty(outDir)) return;
+            try
+            {
+                Process.Start("explorer.exe", "\"" + outDir + "\"");
+            }
+            catch
+            {
+                SetStatus("Не удалось открыть папку.", false);
+            }
+        }
+
         private void OnConvert(object sender, EventArgs e)
         {
             if (_lstInputs.Items.Count == 0)
@@ -285,7 +415,21 @@ namespace Cad2Gdml.App
                 return;
             }
 
+            // STEP — блокируем конвертацию
+            if (HasStepInput())
+            {
+                SetStatus("STEP пока не поддерживается в этой версии", false);
+                return;
+            }
+
+            // Папка вывода: автозаполнение если пуста
             string outDir = _txtOutDir.Text.Trim();
+            if (string.IsNullOrEmpty(outDir))
+            {
+                outDir = ComputeDefaultOutDir();
+                _txtOutDir.Text = outDir;
+            }
+
             if (string.IsNullOrEmpty(outDir))
             {
                 SetStatus("Укажите папку вывода.", false);
@@ -322,7 +466,7 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // Если все входы — 3MF, передаём 0 (единицы из файла); иначе — значение из ComboBox
+            // Единицы
             double unitToMm;
             if (AllAre3Mf(inputs))
                 unitToMm = 0.0;
@@ -339,6 +483,7 @@ namespace Cad2Gdml.App
             opts.AllowDefaultMaterial = _chkAllowDefault.Checked;
             opts.DropOpen = _chkDropOpen.Checked;
 
+            _btnOpenFolder.Enabled = false;
             SetControlsEnabled(false);
             SetStatus("Конвертация…", true);
             _worker.RunWorkerAsync(opts);
@@ -366,14 +511,12 @@ namespace Cad2Gdml.App
 
             if (result.ExitCode != 0)
             {
-                // Очищаем картинку от предыдущего успешного прогона
                 if (_picSketch.Image != null)
                 {
                     _picSketch.Image.Dispose();
                     _picSketch.Image = null;
                 }
 
-                // Формируем статус: Сбой (код N): ID — сообщение
                 int exitCode = result.ExitCode;
                 string statusLine;
                 if (!string.IsNullOrEmpty(result.MainErrorId))
@@ -383,7 +526,6 @@ namespace Cad2Gdml.App
                 }
                 else
                 {
-                    // MainErrorId пуст — берём сообщение последней диагностики
                     string lastMsg = "";
                     if (result.Diagnostics != null && result.Diagnostics.Count > 0)
                     {
@@ -393,15 +535,13 @@ namespace Cad2Gdml.App
                     statusLine = "Сбой (код " + exitCode.ToString(CultureInfo.InvariantCulture) + "): " + lastMsg;
                 }
                 SetStatus(statusLine, false);
-
-                // Показываем диагностику сбойного прогона в отчёте
                 RenderFailureReport(result);
                 return;
             }
 
             SetStatus("Готово → " + result.GdmlPath, true);
+            _btnOpenFolder.Enabled = true;
 
-            // Показ картинки через MemoryStream
             if (!string.IsNullOrEmpty(result.PngPath) && File.Exists(result.PngPath))
             {
                 try
@@ -411,9 +551,9 @@ namespace Cad2Gdml.App
                     var ms = new MemoryStream(File.ReadAllBytes(result.PngPath));
                     _picSketch.Image = new Bitmap(ms);
                 }
-                catch
+                catch (Exception pex)
                 {
-                    // Не критично
+                    SetStatus("Не удалось показать эскиз: " + pex.Message, false);
                 }
             }
 
@@ -492,7 +632,6 @@ namespace Cad2Gdml.App
 
         // --- Вспомогательные ---
 
-        // Единицы → множитель в мм
         private double GetUnitToMm()
         {
             int idx = _cmbUnit.SelectedIndex;
@@ -502,7 +641,6 @@ namespace Cad2Gdml.App
             return 1.0;
         }
 
-        // Все ли файлы в списке — .3mf
         private static bool AllAre3Mf(List<string> files)
         {
             for (int i = 0; i < files.Count; i++)
@@ -514,7 +652,6 @@ namespace Cad2Gdml.App
             return true;
         }
 
-        // Смешаны ли 3MF и не-3MF в одном списке
         private static bool HasMixedInputs(List<string> files)
         {
             bool has3mf = false;
@@ -530,11 +667,73 @@ namespace Cad2Gdml.App
             return has3mf && hasOther;
         }
 
-        // Вкл/выкл во время конвертации
+        // Есть ли STEP в списке входов
+        private bool HasStepInput()
+        {
+            for (int i = 0; i < _lstInputs.Items.Count; i++)
+            {
+                string item = (string)_lstInputs.Items[i];
+                string ext = Path.GetExtension(item);
+                if (ext != null)
+                {
+                    string le = ext.ToLowerInvariant();
+                    if (le == ".step" || le == ".stp")
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        // Предупреждение о STEP при добавлении
+        private void CheckStepWarning(string file)
+        {
+            string ext = Path.GetExtension(file);
+            if (ext == null) return;
+            string le = ext.ToLowerInvariant();
+            if (le == ".step" || le == ".stp")
+            {
+                SetStatus("STEP пока не поддерживается в этой версии", false);
+            }
+        }
+
+        // Автозаполнение папки вывода при первом входе
+        private void AutoFillOutDir()
+        {
+            if (!string.IsNullOrEmpty(_txtOutDir.Text.Trim()))
+                return;
+
+            string dir = ComputeDefaultOutDir();
+            if (!string.IsNullOrEmpty(dir))
+                _txtOutDir.Text = dir;
+        }
+
+        // Вычисление папки вывода по умолчанию из первого входа
+        private string ComputeDefaultOutDir()
+        {
+            if (_lstInputs.Items.Count == 0) return "";
+
+            string first = (string)_lstInputs.Items[0];
+            string baseDir;
+            if (Directory.Exists(first))
+            {
+                baseDir = first.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+            else
+            {
+                baseDir = Path.GetDirectoryName(first);
+            }
+
+            if (string.IsNullOrEmpty(baseDir))
+                return "";
+
+            return Path.Combine(baseDir, "cad2gdml_out");
+        }
+
         private void SetControlsEnabled(bool en)
         {
             _btnAddFiles.Enabled = en;
             _btnAddFolder.Enabled = en;
+            _btnRemove.Enabled = en;
             _cmbUnit.Enabled = en;
             _txtCrystal.Enabled = en;
             _cmbFront.Enabled = en;
@@ -546,14 +745,12 @@ namespace Cad2Gdml.App
             _lstInputs.Enabled = en;
         }
 
-        // Статус (красный при ошибке)
         private void SetStatus(string text, bool ok)
         {
             _lblStatus.Text = text;
             _lblStatus.ForeColor = ok ? Color.Black : Color.Red;
         }
 
-        // Безопасное перечисление только *.stl, *.obj, *.3mf
         private static string[] SafeGetFiles(string dir)
         {
             try
@@ -565,7 +762,7 @@ namespace Cad2Gdml.App
                     string ext = Path.GetExtension(f);
                     if (ext == null) continue;
                     ext = ext.ToLowerInvariant();
-                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf")
+                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf" || ext == ".step" || ext == ".stp")
                         result.Add(f);
                 }
                 return result.ToArray();

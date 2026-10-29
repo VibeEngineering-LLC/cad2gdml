@@ -12,4 +12,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Cad2Gdml.Core\Cad2Gdml.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Cad2Gdml.App\Cad2Gdml.App.csproj" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
 </Project>

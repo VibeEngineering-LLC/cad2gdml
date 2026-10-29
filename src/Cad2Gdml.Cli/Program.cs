@@ -41,6 +41,7 @@ namespace Cad2Gdml.Cli
             string materials = null;
             bool allowDefault = false;
             bool dropOpen = false;
+            bool keepOpen = false;
 
             int idx = 0;
             while (idx < args.Length)
@@ -80,6 +81,10 @@ namespace Cad2Gdml.Cli
                 else if (a == "--allow-default-material")
                 {
                     allowDefault = true;
+                }
+                else if (a == "--keep-open")
+                {
+                    keepOpen = true;
                 }
                 else if (a == "--drop-open")
                 {
@@ -147,7 +152,8 @@ namespace Cad2Gdml.Cli
                 FrontSign = front,
                 MaterialsJsonPath = materials,
                 AllowDefaultMaterial = allowDefault,
-                DropOpen = dropOpen
+                DropOpen = dropOpen,
+                KeepOpen = keepOpen
             };
 
             // Запуск конвейера
@@ -182,6 +188,7 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
+            Console.WriteLine("  --keep-open                Оставлять открытые сетки с предупреждением");
             Console.WriteLine("  --help, -h                 Эта справка");
         }
 

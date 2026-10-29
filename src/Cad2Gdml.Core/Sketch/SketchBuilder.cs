@@ -80,7 +80,6 @@ namespace Cad2Gdml.Sketch
         {
             List<string> lines = new List<string>();
 
-            // Строка 1 — детектор
             Part crystal = FindFirstRole(scene, PartRole.Crystal);
             if (crystal != null && crystal.Shape != null)
             {
@@ -96,7 +95,6 @@ namespace Cad2Gdml.Sketch
                 }
             }
 
-            // Строка 2 — стакан Маринелли (Container, tube)
             Part container = FindFirstRole(scene, PartRole.Container);
             if (container != null && container.Shape != null && container.Shape.Kind == SolidKind.Tube)
             {
@@ -105,7 +103,6 @@ namespace Cad2Gdml.Sketch
                 lines.Add("\u0421\u0442\u0430\u043A\u0430\u043D \u041C\u0430\u0440\u0438\u043D\u0435\u043B\u043B\u0438: \u2300" + Fmt(d) + " \u00D7 " + Fmt(h) + " \u043C\u043C");
             }
 
-            // Образец (Source)
             Part source = FindFirstRole(scene, PartRole.Source);
             if (source != null && source.Shape != null)
             {
@@ -121,7 +118,6 @@ namespace Cad2Gdml.Sketch
                 }
             }
 
-            // Не в расчёте (Shield / Housing)
             List<string> excluded = new List<string>();
             foreach (Part p in scene.Parts)
             {
@@ -160,13 +156,17 @@ namespace Cad2Gdml.Sketch
     public static class SketchBuilder
     {
         private const double JoinTol = 1e-4;
+        private const double LabelMinFrac = 0.03;   // 3 % сцены
+        private const double NoiseMinFrac = 0.002;  // 0.2 % сцены
+        private const int MaxLabels = 15;
+        private const int MaxLabelLen = 24;
 
         // Построить модель сечения
         public static SketchModel Build(SceneModel scene)
         {
-            SketchModel model = new SketchModel();
-            model.Regions = new List<SketchRegion>();
-            model.Captions = CaptionFormatter.Lines(scene);
+            // Первый проход: генерация регионов по частям
+            List<Part> partOrder = new List<Part>();
+            Dictionary<Part, List<SketchRegion>> partRegions = new Dictionary<Part, List<SketchRegion>>();
 
             foreach (Part part in scene.Parts)
             {
@@ -175,28 +175,265 @@ namespace Cad2Gdml.Sketch
                     continue;
                 }
 
+                List<SketchRegion> regs = new List<SketchRegion>();
                 switch (part.Shape.Kind)
                 {
                     case SolidKind.Tube:
-                        AddTube(model, part);
+                        AddTube(regs, part);
                         break;
                     case SolidKind.Polycone:
-                        AddPolycone(model, part);
+                        AddPolycone(regs, part);
                         break;
                     case SolidKind.Box:
-                        AddBox(model, part);
+                        AddBox(regs, part);
                         break;
                     case SolidKind.Tessellated:
-                        AddTessellated(model, part);
+                        AddTessellated(regs, part);
                         break;
+                }
+
+                if (regs.Count > 0)
+                {
+                    partOrder.Add(part);
+                    partRegions[part] = regs;
+                }
+            }
+
+            if (partOrder.Count == 0)
+            {
+                SketchModel empty = new SketchModel();
+                empty.Regions = new List<SketchRegion>();
+                empty.Captions = CaptionFormatter.Lines(scene);
+                return empty;
+            }
+
+            // Габариты всей сцены (по x и z)
+            double sceneMinX = double.MaxValue;
+            double sceneMaxX = double.MinValue;
+            double sceneMinZ = double.MaxValue;
+            double sceneMaxZ = double.MinValue;
+
+            foreach (Part p in partOrder)
+            {
+                foreach (SketchRegion r in partRegions[p])
+                {
+                    foreach (Vec3d pt in r.Points)
+                    {
+                        if (pt.X < sceneMinX) { sceneMinX = pt.X; }
+                        if (pt.X > sceneMaxX) { sceneMaxX = pt.X; }
+                        if (pt.Z < sceneMinZ) { sceneMinZ = pt.Z; }
+                        if (pt.Z > sceneMaxZ) { sceneMaxZ = pt.Z; }
+                    }
+                }
+            }
+
+            double sceneWx = sceneMaxX - sceneMinX;
+            double sceneWz = sceneMaxZ - sceneMinZ;
+
+            // Фильтрация tessellated: убираем замкнутые полилинии-шум (< 0.2 % сцены),
+            // но сохраняем наибольшую замкнутую для части
+            foreach (Part p in partOrder)
+            {
+                if (p.Shape == null || p.Shape.Kind != SolidKind.Tessellated)
+                {
+                    continue;
+                }
+
+                List<SketchRegion> regs = partRegions[p];
+                if (regs.Count <= 1)
+                {
+                    continue;
+                }
+
+                // Находим наибольшую замкнутую полилинию по площади bbox
+                SketchRegion largestClosed = null;
+                double largestArea = -1.0;
+
+                foreach (SketchRegion r in regs)
+                {
+                    if (!r.IsClosed)
+                    {
+                        continue;
+                    }
+                    double[] bb = RegionBBox(r.Points);
+                    double area = (bb[1] - bb[0]) * (bb[3] - bb[2]);
+                    if (area > largestArea)
+                    {
+                        largestArea = area;
+                        largestClosed = r;
+                    }
+                }
+
+                double noiseW = sceneWx * NoiseMinFrac;
+                double noiseH = sceneWz * NoiseMinFrac;
+
+                if (largestClosed != null)
+                {
+                    List<SketchRegion> kept = new List<SketchRegion>();
+                    foreach (SketchRegion r in regs)
+                    {
+                        if (r.IsClosed && !ReferenceEquals(r, largestClosed))
+                        {
+                            double[] bb = RegionBBox(r.Points);
+                            double w = bb[1] - bb[0];
+                            double h = bb[3] - bb[2];
+                            if (w < noiseW && h < noiseH)
+                            {
+                                continue; // шум — пропускаем
+                            }
+                        }
+                        kept.Add(r);
+                    }
+                    partRegions[p] = kept;
+                }
+            }
+
+            // Bounding box каждой части (после фильтрации)
+            Dictionary<Part, double[]> partBBox = new Dictionary<Part, double[]>();
+
+            foreach (Part p in partOrder)
+            {
+                List<SketchRegion> regs = partRegions[p];
+                if (regs.Count == 0)
+                {
+                    continue;
+                }
+
+                double minX = double.MaxValue;
+                double maxX = double.MinValue;
+                double minZ = double.MaxValue;
+                double maxZ = double.MinValue;
+
+                foreach (SketchRegion r in regs)
+                {
+                    foreach (Vec3d pt in r.Points)
+                    {
+                        if (pt.X < minX) { minX = pt.X; }
+                        if (pt.X > maxX) { maxX = pt.X; }
+                        if (pt.Z < minZ) { minZ = pt.Z; }
+                        if (pt.Z > maxZ) { maxZ = pt.Z; }
+                    }
+                }
+
+                partBBox[p] = new double[] { minX, maxX, minZ, maxZ };
+            }
+
+            // Определение частей, которым присваивается подпись:
+            // bbox НЕ меньше 3 % сцены И по x И по z
+            List<KeyValuePair<Part, double>> eligible = new List<KeyValuePair<Part, double>>();
+            double labelMinW = sceneWx * LabelMinFrac;
+            double labelMinH = sceneWz * LabelMinFrac;
+
+            foreach (Part p in partOrder)
+            {
+                if (!partBBox.ContainsKey(p))
+                {
+                    continue;
+                }
+
+                double[] bb = partBBox[p];
+                double w = bb[1] - bb[0];
+                double h = bb[3] - bb[2];
+
+                // Нет подписи, если и по x, и по z меньше порога
+                if (w < labelMinW && h < labelMinH)
+                {
+                    continue;
+                }
+
+                eligible.Add(new KeyValuePair<Part, double>(p, w * h));
+            }
+
+            // Ограничение: максимум 15 подписей (наибольшие по площади)
+            if (eligible.Count > MaxLabels)
+            {
+                eligible.Sort(delegate(KeyValuePair<Part, double> a, KeyValuePair<Part, double> b)
+                {
+                    return b.Value.CompareTo(a.Value);
+                });
+                eligible = eligible.GetRange(0, MaxLabels);
+            }
+
+            HashSet<Part> labelSet = new HashSet<Part>();
+            foreach (KeyValuePair<Part, double> kv in eligible)
+            {
+                labelSet.Add(kv.Key);
+            }
+
+            // Сборка финальной модели
+            SketchModel model = new SketchModel();
+            model.Regions = new List<SketchRegion>();
+            model.Captions = CaptionFormatter.Lines(scene);
+
+            foreach (Part p in partOrder)
+            {
+                List<SketchRegion> regs = partRegions[p];
+
+                // Контур без подписи
+                foreach (SketchRegion r in regs)
+                {
+                    r.Label = null;
+                    model.Regions.Add(r);
+                }
+
+                // Одна подпись на часть — в центре bbox сечения
+                if (labelSet.Contains(p) && partBBox.ContainsKey(p))
+                {
+                    double[] bb = partBBox[p];
+                    double cx = (bb[0] + bb[1]) / 2.0;
+                    double cz = (bb[2] + bb[3]) / 2.0;
+
+                    SketchRegion lbl = new SketchRegion();
+                    lbl.Points = new List<Vec3d>
+                    {
+                        new Vec3d(cx, 0.0, cz),
+                        new Vec3d(cx, 0.0, cz)
+                    };
+                    lbl.IsClosed = false;
+                    lbl.Role = p.Role;
+                    lbl.Label = ShortenName(p.Name);
+                    model.Regions.Add(lbl);
                 }
             }
 
             return model;
         }
 
+        // Сокращение имени до 24 символов с многоточием
+        private static string ShortenName(string name)
+        {
+            if (string.IsNullOrEmpty(name))
+            {
+                return name;
+            }
+            if (name.Length <= MaxLabelLen)
+            {
+                return name;
+            }
+            return name.Substring(0, MaxLabelLen - 1) + "\u2026";
+        }
+
+        // Bounding box набора точек: [minX, maxX, minZ, maxZ]
+        private static double[] RegionBBox(List<Vec3d> pts)
+        {
+            double minX = double.MaxValue;
+            double maxX = double.MinValue;
+            double minZ = double.MaxValue;
+            double maxZ = double.MinValue;
+
+            foreach (Vec3d pt in pts)
+            {
+                if (pt.X < minX) { minX = pt.X; }
+                if (pt.X > maxX) { maxX = pt.X; }
+                if (pt.Z < minZ) { minZ = pt.Z; }
+                if (pt.Z > maxZ) { maxZ = pt.Z; }
+            }
+
+            return new double[] { minX, maxX, minZ, maxZ };
+        }
+
         // Трубка — сечение хордой с учётом смещения оси (X0, Y0)
-        private static void AddTube(SketchModel model, Part part)
+        private static void AddTube(List<SketchRegion> outList, Part part)
         {
             double rMax = part.Shape.RMax;
             double rMin = part.Shape.RMin;
@@ -205,7 +442,6 @@ namespace Cad2Gdml.Sketch
             double cx = part.Shape.X0;
             double cy = part.Shape.Y0;
 
-            // Плоскость y=0 не пересекает трубку
             if (Math.Abs(cy) >= rMax)
             {
                 return;
@@ -215,25 +451,25 @@ namespace Cad2Gdml.Sketch
 
             if (rMin <= 0.0)
             {
-                AddToRegions(model, MakeRect(part, cx - halfOuter, cx + halfOuter, z0, z1));
+                outList.Add(MakeRect(part, cx - halfOuter, cx + halfOuter, z0, z1));
             }
             else
             {
                 double halfInner = Math.Sqrt(Math.Max(0.0, rMin * rMin - cy * cy));
                 if (halfInner < 1e-9)
                 {
-                    AddToRegions(model, MakeRect(part, cx - halfOuter, cx + halfOuter, z0, z1));
+                    outList.Add(MakeRect(part, cx - halfOuter, cx + halfOuter, z0, z1));
                 }
                 else
                 {
-                    AddToRegions(model, MakeRect(part, cx - halfOuter, cx - halfInner, z0, z1));
-                    AddToRegions(model, MakeRect(part, cx + halfInner, cx + halfOuter, z0, z1));
+                    outList.Add(MakeRect(part, cx - halfOuter, cx - halfInner, z0, z1));
+                    outList.Add(MakeRect(part, cx + halfInner, cx + halfOuter, z0, z1));
                 }
             }
         }
 
         // Поликонус — сечение с учётом смещения оси (X0, Y0)
-        private static void AddPolycone(SketchModel model, Part part)
+        private static void AddPolycone(List<SketchRegion> outList, Part part)
         {
             List<double> zp = part.Shape.ZPlane;
             List<double> ro = part.Shape.ROuter;
@@ -247,7 +483,6 @@ namespace Cad2Gdml.Sketch
             double cx = part.Shape.X0;
             double cy = part.Shape.Y0;
 
-            // Проверка: есть ли хоть один уровень, который пересекает плоскость
             bool anyVisible = false;
             for (int i = 0; i < n; i++)
             {
@@ -279,8 +514,7 @@ namespace Cad2Gdml.Sketch
             op.Points = outer;
             op.IsClosed = true;
             op.Role = part.Role;
-            op.Label = part.Name;
-            AddToRegions(model, op);
+            outList.Add(op);
 
             // Внутренний контур (полость)
             bool hasHole = false;
@@ -306,13 +540,12 @@ namespace Cad2Gdml.Sketch
                 ip.Points = inner;
                 ip.IsClosed = true;
                 ip.Role = part.Role;
-                ip.Label = part.Name;
-                AddToRegions(model, ip);
+                outList.Add(ip);
             }
         }
 
         // Брусок — центр в (X0, Y0, Z0), размер BoxX×BoxY×BoxZ
-        private static void AddBox(SketchModel model, Part part)
+        private static void AddBox(List<SketchRegion> outList, Part part)
         {
             double bx = part.Shape.BoxX;
             double by = part.Shape.BoxY;
@@ -321,7 +554,6 @@ namespace Cad2Gdml.Sketch
             double cy = part.Shape.Y0;
             double cz = part.Shape.Z0;
 
-            // Плоскость y=0 не пересекает бокс
             if (Math.Abs(cy) > by / 2.0)
             {
                 return;
@@ -330,11 +562,11 @@ namespace Cad2Gdml.Sketch
             double halfW = bx / 2.0;
             double halfH = bz / 2.0;
 
-            AddToRegions(model, MakeRect(part, cx - halfW, cx + halfW, cz - halfH, cz + halfH));
+            outList.Add(MakeRect(part, cx - halfW, cx + halfW, cz - halfH, cz + halfH));
         }
 
         // Tessellated — сечение треугольников плоскостью y=0
-        private static void AddTessellated(SketchModel model, Part part)
+        private static void AddTessellated(List<SketchRegion> outList, Part part)
         {
             Mesh mesh = part.Mesh;
             if (mesh == null || mesh.TriangleCount == 0)
@@ -342,7 +574,6 @@ namespace Cad2Gdml.Sketch
                 return;
             }
 
-            // Отрезки: [x1, z1, x2, z2]
             List<double[]> segs = new List<double[]>();
 
             for (int i = 0; i < mesh.TriangleCount; i++)
@@ -350,9 +581,9 @@ namespace Cad2Gdml.Sketch
                 Vec3d a, b, c;
                 mesh.GetTriangle(i, out a, out b, out c);
 
-                double[] pa = Cross(a, b);
-                double[] pb = Cross(b, c);
-                double[] pc = Cross(c, a);
+                double[] pa = CrossY(a, b);
+                double[] pb = CrossY(b, c);
+                double[] pc = CrossY(c, a);
 
                 if (pa != null && pb != null)
                 {
@@ -373,23 +604,17 @@ namespace Cad2Gdml.Sketch
                 return;
             }
 
-            // Сшивка отрезков в полилинии по концам
             List<SketchRegion> chains = ChainSegs(segs, part);
-            foreach (SketchRegion cr in chains)
-            {
-                AddToRegions(model, cr);
-            }
+            outList.AddRange(chains);
         }
 
         // Пересечение отрезка с y=0; null если нет
-        private static double[] Cross(Vec3d a, Vec3d b)
+        private static double[] CrossY(Vec3d a, Vec3d b)
         {
-            // Оба на плоскости — не пересечение
             if (Math.Abs(a.Y) < 1e-12 && Math.Abs(b.Y) < 1e-12)
             {
                 return null;
             }
-            // Оба с одной стороны
             if (a.Y * b.Y > 0.0)
             {
                 return null;
@@ -400,8 +625,8 @@ namespace Cad2Gdml.Sketch
             {
                 return null;
             }
-            if (t < 0.0) t = 0.0;
-            if (t > 1.0) t = 1.0;
+            if (t < 0.0) { t = 0.0; }
+            if (t > 1.0) { t = 1.0; }
 
             double x = a.X + t * (b.X - a.X);
             double z = a.Z + t * (b.Z - a.Z);
@@ -428,7 +653,6 @@ namespace Cad2Gdml.Sketch
                 pts.Add(new Vec3d(s[0], 0.0, s[1]));
                 pts.Add(new Vec3d(s[2], 0.0, s[3]));
 
-                // Расширяем вперёд и назад
                 bool grew = true;
                 while (grew)
                 {
@@ -459,7 +683,6 @@ namespace Cad2Gdml.Sketch
                         }
                     }
 
-                    // Расширение назад
                     double fx = pts[0].X;
                     double fz = pts[0].Z;
                     for (int j = 0; j < n; j++)
@@ -488,7 +711,6 @@ namespace Cad2Gdml.Sketch
 
                 if (pts.Count >= 2)
                 {
-                    // Проверка замкнутости: первая и последняя точки совпадают
                     Vec3d first = pts[0];
                     Vec3d last = pts[pts.Count - 1];
                     double dx = first.X - last.X;
@@ -499,7 +721,6 @@ namespace Cad2Gdml.Sketch
                     region.Points = pts;
                     region.IsClosed = closed;
                     region.Role = part.Role;
-                    region.Label = part.Name;
                     result.Add(region);
                 }
             }
@@ -513,7 +734,6 @@ namespace Cad2Gdml.Sketch
             SketchRegion r = new SketchRegion();
             r.IsClosed = true;
             r.Role = part.Role;
-            r.Label = part.Name;
             r.Points = new List<Vec3d>
             {
                 new Vec3d(x0, 0.0, z0),
@@ -522,16 +742,6 @@ namespace Cad2Gdml.Sketch
                 new Vec3d(x0, 0.0, z1)
             };
             return r;
-        }
-
-        // Добавить регион в модель
-        private static void AddToRegions(SketchModel model, SketchRegion region)
-        {
-            if (model.Regions == null)
-            {
-                model.Regions = new List<SketchRegion>();
-            }
-            model.Regions.Add(region);
         }
     }
 }

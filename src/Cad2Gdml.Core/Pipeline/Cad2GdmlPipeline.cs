@@ -30,6 +30,8 @@ namespace Cad2Gdml.Pipeline
         public string MaterialsJsonPath;
         public bool AllowDefaultMaterial;
         public bool DropOpen;
+        public bool KeepOpen; // оставлять открытые сетки с предупреждением (для просмотра; Geant4 может не загрузить)
+        public bool NoSplit;
     }
 
     // Результат конвейера
@@ -75,17 +77,22 @@ namespace Cad2Gdml.Pipeline
                 if (!loaded)
                     return Fail(result);
 
-                // 2. Сшивка и топология
-                if (!ProcessMeshes(scene))
+                // 2. Сшивка, разбиение, топология
+                if (!ProcessMeshes(o, scene))
                     return Fail(result);
 
                 // 3. Роли и открытые сетки
                 if (!AssignRoles(o, scene))
                     return Fail(result);
 
-                // 4. Кадр координат
-                if (!BuildFrame(o, scene))
-                    return Fail(result);
+                // 4. Кадр координат (только если есть кристалл)
+                Part crystal = FindCrystal(scene);
+                if (crystal != null)
+                {
+                    if (!BuildFrame(o, scene, crystal))
+                        return Fail(result);
+                }
+                // иначе: детали остаются в координатах файла
 
                 // 5. Распознавание тел
                 RecognizeShapes(scene);
@@ -94,7 +101,10 @@ namespace Cad2Gdml.Pipeline
                 if (!ResolveMaterials(o, scene))
                     return Fail(result);
 
-                // 7. Запись выходных
+                // 7. Сортировка по имени (детерминированный порядок)
+                SortParts(scene);
+
+                // 8. Запись выходных
                 try
                 {
                     if (!WriteOutputs(o, scene, result))
@@ -112,7 +122,7 @@ namespace Cad2Gdml.Pipeline
             }
             catch (Exception ex)
             {
-                scene.Add("E_INTERNAL", DiagSeverity.Error, "", ex.Message);
+                scene.Add("E_INTERNAL", DiagSeverity.Error, "", Environment.GetEnvironmentVariable("CAD2GDML_DEBUG") == "1" ? ex.ToString() : ex.Message);
                 return Fail(result);
             }
         }
@@ -230,17 +240,17 @@ namespace Cad2Gdml.Pipeline
             }
         }
 
-        // Сшивка, топология, объём
-        private static bool ProcessMeshes(SceneModel scene)
+        // Сшивка, разбиение на связные компоненты, топология, объём
+        private static bool ProcessMeshes(PipelineOptions o, SceneModel scene)
         {
             const double weldTol = 1e-5;
 
+            // Фаза 1: проверка NaN + сварка
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
                 if (p.Mesh == null) continue;
 
-                // Нечисловые координаты
                 foreach (Vec3d vv in p.Mesh.Vertices)
                 {
                     if (double.IsNaN(vv.X + vv.Y + vv.Z) || double.IsInfinity(vv.X + vv.Y + vv.Z))
@@ -250,17 +260,28 @@ namespace Cad2Gdml.Pipeline
                     }
                 }
 
-                // Сшивка вершин
                 p.Mesh = MeshWelder.Weld(p.Mesh, weldTol);
+            }
 
-                // Топология
+            // Фаза 2: разбиение на связные компоненты
+            if (!o.NoSplit)
+            {
+                SplitConnectedComponents(scene);
+            }
+
+            // Фаза 3: топология и объём для каждой (возможно разбитой) детали
+            for (int i = 0; i < scene.Parts.Count; i++)
+            {
+                Part p = scene.Parts[i];
+                if (p.Mesh == null) continue;
+
                 var topo = MeshTopology.Analyze(p.Mesh);
 
                 if (topo.NonManifoldEdges > 0)
                 {
-                    scene.Add("E_MESH_NONMANIFOLD", DiagSeverity.Error, p.Name,
-                        "Неманиifold рёбра: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture));
-                    return false;
+                    scene.Add("W_MESH_NONMANIFOLD", DiagSeverity.Warning, p.Name,
+                        "Неманифольдных рёбер: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture)
+                        + " (касающиеся тела в одной сетке); Geant4 может потребовать разбивки на детали.");
                 }
 
                 if (topo.InconsistentEdges > 0)
@@ -275,7 +296,6 @@ namespace Cad2Gdml.Pipeline
                     p.MeshOpen = true;
                 }
 
-                // Пустая деталь
                 if (p.Mesh.TriangleCount < 4)
                 {
                     scene.Add("E_MESH_EMPTY", DiagSeverity.Error, p.Name,
@@ -291,7 +311,6 @@ namespace Cad2Gdml.Pipeline
                     return false;
                 }
 
-                // Отрицательный объём — инверсия
                 if (vol < 0.0)
                 {
                     p.Mesh.FlipWinding();
@@ -303,6 +322,184 @@ namespace Cad2Gdml.Pipeline
             }
 
             return true;
+        }
+
+        // Разбиение деталей с несколькими связными компонентами
+        private static void SplitConnectedComponents(SceneModel scene)
+        {
+            for (int pi = scene.Parts.Count - 1; pi >= 0; pi--)
+            {
+                Part p = scene.Parts[pi];
+                if (p.Mesh == null) continue;
+
+                int nVerts = p.Mesh.Vertices.Count;
+                if (nVerts == 0) continue;
+
+                // Union-Find по вершинам
+                int[] parent = new int[nVerts];
+                for (int vi = 0; vi < nVerts; vi++) parent[vi] = vi;
+
+                for (int ti = 0; ti < p.Mesh.TriangleCount; ti++)
+                {
+                    int i0 = p.Mesh.Indices[ti * 3];
+                    int i1 = p.Mesh.Indices[ti * 3 + 1];
+                    int i2 = p.Mesh.Indices[ti * 3 + 2];
+                    Union(parent, i0, i1);
+                    Union(parent, i1, i2);
+                }
+
+                // Группировка треугольников по компоненте (корень первой вершины)
+                var compMap = new Dictionary<int, List<int>>();
+                for (int ti = 0; ti < p.Mesh.TriangleCount; ti++)
+                {
+                    int root = Find(parent, p.Mesh.Indices[ti * 3]);
+                    List<int> list;
+                    if (!compMap.TryGetValue(root, out list))
+                    {
+                        list = new List<int>();
+                        compMap[root] = list;
+                    }
+                    list.Add(ti);
+                }
+
+                if (compMap.Count <= 1) continue;
+
+                // Сортировка: убывание числа треугольников, при равенстве — меньший мин. индекс вершины
+                var comps = new List<KeyValuePair<int, List<int>>>(compMap.Count);
+                foreach (KeyValuePair<int, List<int>> kvp in compMap)
+                    comps.Add(kvp);
+
+                comps.Sort(delegate(KeyValuePair<int, List<int>> a, KeyValuePair<int, List<int>> b)
+                {
+                    int cmp = b.Value.Count.CompareTo(a.Value.Count);
+                    if (cmp != 0) return cmp;
+                    int minA = int.MaxValue;
+                    foreach (int t in a.Value)
+                    {
+                        int idx = p.Mesh.Indices[t * 3];
+                        if (idx < minA) minA = idx;
+                    }
+                    int minB = int.MaxValue;
+                    foreach (int t in b.Value)
+                    {
+                        int idx = p.Mesh.Indices[t * 3];
+                        if (idx < minB) minB = idx;
+                    }
+                    return minA.CompareTo(minB);
+                });
+
+                int nComp = comps.Count;
+                scene.Add("I_SPLIT", DiagSeverity.Info, p.Name,
+                    "деталь " + p.Name + " разбита на " + nComp.ToString(CultureInfo.InvariantCulture) + " связных тел");
+
+                // Построение новых деталей
+                var newParts = new List<Part>();
+                for (int ci = 0; ci < nComp; ci++)
+                {
+                    List<int> tris = comps[ci].Value;
+
+                    if (tris.Count < 4)
+                    {
+                        scene.Add("W_COMPONENT_TINY", DiagSeverity.Warning, p.Name,
+                            "связное тело " + (ci + 1).ToString(CultureInfo.InvariantCulture)
+                            + " из " + p.Name + " содержит менее 4 треугольников — удалено");
+                        continue;
+                    }
+
+                    // Перенумерация вершин компонента
+                    var oldToNew = new Dictionary<int, int>();
+                    var newVerts = new List<Vec3d>();
+                    var newIndices = new List<int>();
+
+                    for (int tj = 0; tj < tris.Count; tj++)
+                    {
+                        int ti = tris[tj];
+                        int i0 = p.Mesh.Indices[ti * 3];
+                        int i1 = p.Mesh.Indices[ti * 3 + 1];
+                        int i2 = p.Mesh.Indices[ti * 3 + 2];
+
+                        int n0, n1, n2;
+                        if (!oldToNew.TryGetValue(i0, out n0))
+                        {
+                            n0 = newVerts.Count;
+                            newVerts.Add(p.Mesh.Vertices[i0]);
+                            oldToNew[i0] = n0;
+                        }
+                        if (!oldToNew.TryGetValue(i1, out n1))
+                        {
+                            n1 = newVerts.Count;
+                            newVerts.Add(p.Mesh.Vertices[i1]);
+                            oldToNew[i1] = n1;
+                        }
+                        if (!oldToNew.TryGetValue(i2, out n2))
+                        {
+                            n2 = newVerts.Count;
+                            newVerts.Add(p.Mesh.Vertices[i2]);
+                            oldToNew[i2] = n2;
+                        }
+
+                        newIndices.Add(n0);
+                        newIndices.Add(n1);
+                        newIndices.Add(n2);
+                    }
+
+                    Mesh newMesh = new Mesh();
+                    newMesh.Vertices.AddRange(newVerts);
+                    newMesh.Indices.AddRange(newIndices);
+
+                    string newName = p.Name + "_c" + (ci + 1).ToString("D2", CultureInfo.InvariantCulture);
+
+                    Part np = new Part();
+                    np.Name = newName;
+                    np.OrigName = p.OrigName;
+                    np.Mesh = newMesh;
+                    np.Role = p.Role;
+                    np.Material = p.Material;
+                    np.Shape = null;
+                    np.VolumeMm3 = 0.0;
+                    np.SourceFile = p.SourceFile;
+                    np.MeshOpen = false;
+
+                    newParts.Add(np);
+                }
+
+                // Замена: удалить старую, вставить новые на её место
+                scene.Parts.RemoveAt(pi);
+                for (int ni = 0; ni < newParts.Count; ni++)
+                {
+                    scene.Parts.Insert(pi + ni, newParts[ni]);
+                }
+            }
+        }
+
+        // Union-Find: найти корень
+        private static int Find(int[] parent, int x)
+        {
+            while (parent[x] != x)
+            {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            return x;
+        }
+
+        // Union-Find: объединить
+        private static void Union(int[] parent, int a, int b)
+        {
+            int ra = Find(parent, a);
+            int rb = Find(parent, b);
+            if (ra != rb) parent[ra] = rb;
+        }
+
+        // Поиск детали с ролью Crystal
+        private static Part FindCrystal(SceneModel scene)
+        {
+            for (int i = 0; i < scene.Parts.Count; i++)
+            {
+                if (scene.Parts[i].Role == PartRole.Crystal)
+                    return scene.Parts[i];
+            }
+            return null;
         }
 
         // Назначение ролей и обработка открытых сеток
@@ -320,6 +517,13 @@ namespace Cad2Gdml.Pipeline
                 bool isKey = (op.Role == PartRole.Crystal || op.Role == PartRole.Source
                     || op.Role == PartRole.Container);
 
+                if (o.KeepOpen)
+                {
+                    scene.Add("W_MESH_OPEN_KEPT", DiagSeverity.Warning, op.Name,
+                        "Сетка открыта — деталь оставлена как есть (Geant4 может отвергнуть).");
+                    continue;
+                }
+
                 if (isKey || !o.DropOpen)
                 {
                     scene.Add("E_MESH_OPEN", DiagSeverity.Error, op.Name, "Открытая сетка.");
@@ -331,44 +535,74 @@ namespace Cad2Gdml.Pipeline
                 scene.Parts.RemoveAt(oi);
             }
 
-            // Ошибки ролей из диагностики
+            if (scene.Parts.Count == 0)
+            {
+                scene.Add("E_SCENE_EMPTY", DiagSeverity.Error, "", "После отбрасывания не осталось ни одной детали.");
+                return false;
+            }
+
+            // E_ROLE_AMBIG — всегда ошибка
             for (int i = 0; i < scene.Diagnostics.Count; i++)
             {
                 Diagnostic d = scene.Diagnostics[i];
-                if (d.Severity == DiagSeverity.Error &&
-                    (d.Code == "E_ROLE_NONE" || d.Code == "E_ROLE_AMBIG"))
+                if (d.Severity == DiagSeverity.Error && d.Code == "E_ROLE_AMBIG")
+                    return false;
+            }
+
+            // Проверка наличия кристалла
+            bool crystalFound = false;
+            for (int i = 0; i < scene.Parts.Count; i++)
+            {
+                if (scene.Parts[i].Role == PartRole.Crystal)
                 {
+                    crystalFound = true;
+                    break;
+                }
+            }
+
+            if (!crystalFound)
+            {
+                if (o.CrystalName != null && o.CrystalName.Length > 0)
+                {
+                    // Кристалл запрошен явно, но не найден → ошибка
+                    bool alreadyReported = false;
+                    for (int i = 0; i < scene.Diagnostics.Count; i++)
+                    {
+                        if (scene.Diagnostics[i].Code == "E_ROLE_NONE" && scene.Diagnostics[i].Severity == DiagSeverity.Error)
+                        {
+                            alreadyReported = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyReported)
+                        scene.Add("E_ROLE_NONE", DiagSeverity.Error, "", "Кристалл не найден: --crystal задан, но совпадений нет.");
                     return false;
                 }
-            }
-
-            // Кристалл найден
-            bool found = false;
-            for (int i = 0; i < scene.Parts.Count; i++)
-            {
-                if (scene.Parts[i].Role == PartRole.Crystal)
+                else
                 {
-                    found = true;
-                    break;
+                    // Кристалл не запрошен и не найден — продолжаем без кадра
+                    RemoveDiagnostics(scene, "E_ROLE_NONE");
+                    scene.Add("W_NO_CRYSTAL", DiagSeverity.Warning, "",
+                        "кристалл не найден: кадр координат не строится, детали остаются в координатах файла");
                 }
             }
-            return found;
+
+            return true;
         }
 
-        // Построение и применение кадра
-        private static bool BuildFrame(PipelineOptions o, SceneModel scene)
+        // Удаление диагностик с указанным кодом
+        private static void RemoveDiagnostics(SceneModel scene, string code)
         {
-            Part crystal = null;
-            for (int i = 0; i < scene.Parts.Count; i++)
+            for (int i = scene.Diagnostics.Count - 1; i >= 0; i--)
             {
-                if (scene.Parts[i].Role == PartRole.Crystal)
-                {
-                    crystal = scene.Parts[i];
-                    break;
-                }
+                if (scene.Diagnostics[i].Code == code)
+                    scene.Diagnostics.RemoveAt(i);
             }
-            if (crystal == null) return false;
+        }
 
+        // Построение и применение кадра (только если кристалл есть)
+        private static bool BuildFrame(PipelineOptions o, SceneModel scene, Part crystal)
+        {
             var frameOpt = new FrameOptions();
             frameOpt.FrontSign = (o.FrontSign != null && o.FrontSign.Length > 0)
                 ? o.FrontSign : "auto";
@@ -386,7 +620,7 @@ namespace Cad2Gdml.Pipeline
 
             FrameBuilder.Apply(scene, t);
 
-            // Проверка: источник/контейнер полностью позади переднего торца
+            // Проверка: источник/контейнер позади переднего торца
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -511,6 +745,15 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
+        // Сортировка деталей по имени (ordinal)
+        private static void SortParts(SceneModel scene)
+        {
+            scene.Parts.Sort(delegate(Part a, Part b)
+            {
+                return string.CompareOrdinal(a.Name, b.Name);
+            });
+        }
+
         // Атомарная запись GDML, PNG, отчёта
         private static bool WriteOutputs(PipelineOptions o, SceneModel scene, PipelineResult result)
         {
@@ -525,19 +768,16 @@ namespace Cad2Gdml.Pipeline
             string pngPath = Path.Combine(outDir, baseName + ".png");
             string reportPath = Path.Combine(outDir, baseName + ".report.txt");
 
-            // Имена временных файлов
             string gdmlTmp = gdmlPath + ".tmp";
             string pngTmp = pngPath + ".tmp";
             string reportTmp = reportPath + ".tmp";
 
-            // Библиотека веществ
             MaterialLibrary lib;
             if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
                 lib = MaterialLibrary.LoadJson(o.MaterialsJsonPath);
             else
                 lib = MaterialLibrary.Default();
 
-            // Рендер в памяти
             var sketch = SketchBuilder.Build(scene);
             Bitmap pngBitmap = GdiSketchRenderer.Render(sketch, 1200, 800);
 
@@ -547,12 +787,10 @@ namespace Cad2Gdml.Pipeline
             GdmlWriteResult gdmlResult;
             try
             {
-                // Запись во временные файлы
                 gdmlResult = GdmlWriter.Write(scene, lib, gdmlTmp);
                 pngBitmap.Save(pngTmp, ImageFormat.Png);
                 File.WriteAllText(reportTmp, report, new UTF8Encoding(false));
 
-                // Перенос: Replace если цель существует, иначе Move
                 if (File.Exists(gdmlPath))
                     File.Replace(gdmlTmp, gdmlPath, null);
                 else
@@ -570,10 +808,8 @@ namespace Cad2Gdml.Pipeline
             }
             catch (Exception ex)
             {
-                // Удаляем все созданные .tmp, старые файлы не трогаем
                 CleanupTemp(gdmlTmp, pngTmp, reportTmp);
 
-                // Определяем код ошибки
                 string code = ExtractMatCode(ex);
                 scene.Add(code, DiagSeverity.Error, "", "Не удалось записать результат: " + ex.Message);
                 return false;
