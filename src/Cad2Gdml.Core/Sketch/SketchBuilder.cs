@@ -653,12 +653,52 @@ namespace Cad2Gdml.Sketch
             return new double[] { x, z };
         }
 
-        // Сшивка отрезков в полилинии
+        // Хеш ячейки пространственной сетки
+        private static long CellKeyHash(long cx, long cz)
+        {
+            return (cx * 73856093L) ^ (cz * 19349663L);
+        }
+
+        // Ключ ячейки из координат
+        private static long CellKey(double x, double z)
+        {
+            long cx = (long)Math.Floor(x / JoinTol);
+            long cz = (long)Math.Floor(z / JoinTol);
+            return CellKeyHash(cx, cz);
+        }
+
+        // Сшивка отрезков в полилинии (O(n) через пространственный хэш)
         private static List<SketchRegion> ChainSegs(List<double[]> segs, Part part)
         {
             int n = segs.Count;
             bool[] used = new bool[n];
             List<SketchRegion> result = new List<SketchRegion>();
+
+            // Пространственный хэш: cell → список индексов сегментов
+            Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>();
+            for (int i = 0; i < n; i++)
+            {
+                double[] s = segs[i];
+                long k1 = CellKey(s[0], s[1]);
+                long k2 = CellKey(s[2], s[3]);
+                List<int> l1;
+                if (!grid.TryGetValue(k1, out l1))
+                {
+                    l1 = new List<int>();
+                    grid[k1] = l1;
+                }
+                l1.Add(i);
+                List<int> l2;
+                if (k1 != k2)
+                {
+                    if (!grid.TryGetValue(k2, out l2))
+                    {
+                        l2 = new List<int>();
+                        grid[k2] = l2;
+                    }
+                    l2.Add(i);
+                }
+            }
 
             for (int i = 0; i < n; i++)
             {
@@ -673,60 +713,111 @@ namespace Cad2Gdml.Sketch
                 pts.Add(new Vec3d(s[0], 0.0, s[1]));
                 pts.Add(new Vec3d(s[2], 0.0, s[3]));
 
+                // Рост вперёд от последней точки
+                double lx = s[2], lz = s[3];
                 bool grew = true;
                 while (grew)
                 {
                     grew = false;
-                    double lx = pts[pts.Count - 1].X;
-                    double lz = pts[pts.Count - 1].Z;
-
-                    for (int j = 0; j < n; j++)
+                    long cx = (long)Math.Floor(lx / JoinTol);
+                    long cz = (long)Math.Floor(lz / JoinTol);
+                    for (long ox = -1; ox <= 1 && !grew; ox++)
                     {
-                        if (used[j])
+                        for (long oz = -1; oz <= 1 && !grew; oz++)
                         {
-                            continue;
-                        }
-                        double[] sj = segs[j];
-                        if (Math.Abs(sj[0] - lx) < JoinTol && Math.Abs(sj[1] - lz) < JoinTol)
-                        {
-                            pts.Add(new Vec3d(sj[2], 0.0, sj[3]));
-                            used[j] = true;
-                            grew = true;
-                            break;
-                        }
-                        if (Math.Abs(sj[2] - lx) < JoinTol && Math.Abs(sj[3] - lz) < JoinTol)
-                        {
-                            pts.Add(new Vec3d(sj[0], 0.0, sj[1]));
-                            used[j] = true;
-                            grew = true;
-                            break;
+                            long key = CellKeyHash(cx + ox, cz + oz);
+                            List<int> cellList;
+                            if (!grid.TryGetValue(key, out cellList))
+                            {
+                                continue;
+                            }
+                            for (int j = 0; j < cellList.Count; j++)
+                            {
+                                int sj = cellList[j];
+                                if (used[sj])
+                                {
+                                    continue;
+                                }
+                                double[] seg = segs[sj];
+                                if (Math.Abs(seg[0] - lx) < JoinTol && Math.Abs(seg[1] - lz) < JoinTol)
+                                {
+                                    pts.Add(new Vec3d(seg[2], 0.0, seg[3]));
+                                    used[sj] = true;
+                                    lx = seg[2]; lz = seg[3];
+                                    grew = true;
+                                    break;
+                                }
+                                if (Math.Abs(seg[2] - lx) < JoinTol && Math.Abs(seg[3] - lz) < JoinTol)
+                                {
+                                    pts.Add(new Vec3d(seg[0], 0.0, seg[1]));
+                                    used[sj] = true;
+                                    lx = seg[0]; lz = seg[1];
+                                    grew = true;
+                                    break;
+                                }
+                            }
                         }
                     }
+                }
 
-                    double fx = pts[0].X;
-                    double fz = pts[0].Z;
-                    for (int j = 0; j < n; j++)
+                // Рост назад от первой точки (сбор в отдельный список)
+                List<Vec3d> back = new List<Vec3d>();
+                double fx = s[0], fz = s[1];
+                grew = true;
+                while (grew)
+                {
+                    grew = false;
+                    long cx = (long)Math.Floor(fx / JoinTol);
+                    long cz = (long)Math.Floor(fz / JoinTol);
+                    for (long ox = -1; ox <= 1 && !grew; ox++)
                     {
-                        if (used[j])
+                        for (long oz = -1; oz <= 1 && !grew; oz++)
                         {
-                            continue;
-                        }
-                        double[] sj = segs[j];
-                        if (Math.Abs(sj[2] - fx) < JoinTol && Math.Abs(sj[3] - fz) < JoinTol)
-                        {
-                            pts.Insert(0, new Vec3d(sj[0], 0.0, sj[1]));
-                            used[j] = true;
-                            grew = true;
-                            break;
-                        }
-                        if (Math.Abs(sj[0] - fx) < JoinTol && Math.Abs(sj[1] - fz) < JoinTol)
-                        {
-                            pts.Insert(0, new Vec3d(sj[2], 0.0, sj[3]));
-                            used[j] = true;
-                            grew = true;
-                            break;
+                            long key = CellKeyHash(cx + ox, cz + oz);
+                            List<int> cellList;
+                            if (!grid.TryGetValue(key, out cellList))
+                            {
+                                continue;
+                            }
+                            for (int j = 0; j < cellList.Count; j++)
+                            {
+                                int sj = cellList[j];
+                                if (used[sj])
+                                {
+                                    continue;
+                                }
+                                double[] seg = segs[sj];
+                                if (Math.Abs(seg[0] - fx) < JoinTol && Math.Abs(seg[1] - fz) < JoinTol)
+                                {
+                                    back.Add(new Vec3d(seg[2], 0.0, seg[3]));
+                                    used[sj] = true;
+                                    fx = seg[2]; fz = seg[3];
+                                    grew = true;
+                                    break;
+                                }
+                                if (Math.Abs(seg[2] - fx) < JoinTol && Math.Abs(seg[3] - fz) < JoinTol)
+                                {
+                                    back.Add(new Vec3d(seg[0], 0.0, seg[1]));
+                                    used[sj] = true;
+                                    fx = seg[0]; fz = seg[1];
+                                    grew = true;
+                                    break;
+                                }
+                            }
                         }
                     }
+                }
+
+                // Объединение: обратный back + pts
+                if (back.Count > 0)
+                {
+                    List<Vec3d> merged = new List<Vec3d>(back.Count + pts.Count);
+                    for (int k = back.Count - 1; k >= 0; k--)
+                    {
+                        merged.Add(back[k]);
+                    }
+                    merged.AddRange(pts);
+                    pts = merged;
                 }
 
                 if (pts.Count >= 2)
