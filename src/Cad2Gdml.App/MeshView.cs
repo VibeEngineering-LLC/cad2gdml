@@ -328,7 +328,7 @@ namespace Cad2Gdml.App
             RaiseViewChanged();
         }
 
-        // Основной отрисовщик
+        // Основной отрисовщик (Z-буфер)
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -366,23 +366,19 @@ namespace Cad2Gdml.App
                 for (int pi = 0; pi < _parts.Count; pi++) totalTris += _partTris[pi].Length;
                 if (totalTris == 0) { DrawGizmo(g, w, h); return; }
 
-                // Массивы данных: каждый исходный треугольник может дать до 2 после клипа
                 int maxOut = totalTris * 2;
-                float[] depths = new float[maxOut];
                 float[] triPts = new float[maxOut * 6];
                 float[] triNrm = new float[maxOut * 3];
                 int[] triPart = new int[maxOut];
                 bool[] triHi = new bool[maxOut];
+                float[] vtxDepth = new float[maxOut * 3]; // глубина каждой вершины
 
                 int total = 0;
-
-                // Буфер клипа: выделяем один раз
                 Vec3d[] triVerts = new Vec3d[6];
 
                 for (int pi = 0; pi < _parts.Count; pi++)
                 {
                     Part part = _parts[pi];
-                    // Пропустить скрытую часть
                     if (Hidden.Contains(part.Name)) continue;
 
                     int[] keptIdx = _partTris[pi];
@@ -395,9 +391,7 @@ namespace Cad2Gdml.App
                         Vec3d a, b, c;
                         mesh.GetTriangle(ti, out a, out b, out c);
 
-                        // Клип или пропуск без клипа
                         int nTris = 1;
-
                         if (_sectionEnabled)
                         {
                             nTris = PlaneClip.ClipTriangle(a, b, c, _sectionAxis, planePos, triVerts);
@@ -408,14 +402,12 @@ namespace Cad2Gdml.App
                             triVerts[0] = a; triVerts[1] = b; triVerts[2] = c;
                         }
 
-                        // Обработка 1 или 2 треугольников
                         for (int tIdx = 0; tIdx < nTris; tIdx++)
                         {
                             Vec3d va = triVerts[tIdx * 3];
                             Vec3d vb = triVerts[tIdx * 3 + 1];
                             Vec3d vc = triVerts[tIdx * 3 + 2];
 
-                            // Вращение относительно центра
                             double ax0 = va.X - _centre.X, ay0 = va.Y - _centre.Y, az0 = va.Z - _centre.Z;
                             double bx0 = vb.X - _centre.X, by0 = vb.Y - _centre.Y, bz0 = vb.Z - _centre.Z;
                             double cx0 = vc.X - _centre.X, cy0 = vc.Y - _centre.Y, cz0 = vc.Z - _centre.Z;
@@ -425,7 +417,6 @@ namespace Cad2Gdml.App
                             RotatePoint(bx0, by0, bz0, yawR, pitchR, out bx, out by, out bz);
                             RotatePoint(cx0, cy0, cz0, yawR, pitchR, out cxr, out cyyr, out czr);
 
-                            // Экран
                             int idx = total;
                             triPts[idx * 6 + 0] = (float)(ax * scale + cx);
                             triPts[idx * 6 + 1] = (float)(-az * scale + cyy);
@@ -434,7 +425,11 @@ namespace Cad2Gdml.App
                             triPts[idx * 6 + 4] = (float)(cxr * scale + cx);
                             triPts[idx * 6 + 5] = (float)(-czr * scale + cyy);
 
-                            depths[idx] = (float)((ay + by + cyyr) / 3.0);
+                            // Глубина вершин: вращённая Y (меньше = ближе)
+                            vtxDepth[idx * 3 + 0] = (float)ay;
+                            vtxDepth[idx * 3 + 1] = (float)by;
+                            vtxDepth[idx * 3 + 2] = (float)cyyr;
+
                             triPart[idx] = pi;
                             triHi[idx] = hi;
 
@@ -465,72 +460,58 @@ namespace Cad2Gdml.App
 
                 if (total == 0) { DrawGizmo(g, w, h); return; }
 
-                // Разделение: не-подсветка / подсветка
-                List<int> nonHi = new List<int>(total);
-                List<int> hiList = new List<int>();
+                // Rasterизация через Z-буфер
+                ZBuffer zb = new ZBuffer(w, h);
+                zb.Clear(BackColor.ToArgb());
+
+                // Определяем, есть ли подсветка
+                bool hasHi = false;
                 for (int i = 0; i < total; i++)
                 {
-                    if (triHi[i]) hiList.Add(i);
-                    else nonHi.Add(i);
+                    if (triHi[i]) { hasHi = true; break; }
                 }
 
-                // Сортировка по глубине (далекие первыми)
-                nonHi.Sort(delegate(int a, int b) { return depths[b].CompareTo(depths[a]); });
-                hiList.Sort(delegate(int a, int b) { return depths[b].CompareTo(depths[a]); });
-
-                bool drawEdges = total < 12000;
-                Pen edgePen = drawEdges ? new Pen(Color.FromArgb(60, 40, 40, 40), 1f) : null;
-                bool hasHi = hiList.Count > 0;
-
-                // Отрисовка не-подсвеченных
-                for (int i = 0; i < nonHi.Count; i++)
+                for (int i = 0; i < total; i++)
                 {
-                    int idx = nonHi[i];
-                    Part part = _parts[triPart[idx]];
-                    Color baseC = GetPartColor(part);
-
-                    float nx = triNrm[idx * 3 + 0], ny = triNrm[idx * 3 + 1], nz = triNrm[idx * 3 + 2];
+                    float nx = triNrm[i * 3 + 0], ny = triNrm[i * 3 + 1], nz = triNrm[i * 3 + 2];
                     float dot = nx * (float)lx + ny * (float)ly + nz * (float)lz;
                     if (dot < 0) dot = -dot;
                     float lam = 0.55f + 0.45f * dot;
 
-                    int cr = Clamp255((int)(baseC.R * lam));
-                    int cg = Clamp255((int)(baseC.G * lam));
-                    int cb = Clamp255((int)(baseC.B * lam));
-
-                    int alpha = hasHi ? 90 : 255;
-                    Color fill = Color.FromArgb(alpha, cr, cg, cb);
-
-                    Point[] pts = MakePts(triPts, idx);
-                    using (SolidBrush br = new SolidBrush(fill))
+                    Color fill;
+                    if (triHi[i])
                     {
-                        g.FillPolygon(br, pts);
+                        // Подсвеченная — оранжевая
+                        int cr = Clamp255((int)(255.0 * lam));
+                        int cg = Clamp255((int)(140.0 * lam));
+                        fill = Color.FromArgb(255, cr, cg, 0);
                     }
-                    if (drawEdges) g.DrawPolygon(edgePen, pts);
+                    else
+                    {
+                        Part part = _parts[triPart[i]];
+                        Color baseC = GetPartColor(part);
+                        int cr = Clamp255((int)(baseC.R * lam));
+                        int cg = Clamp255((int)(baseC.G * lam));
+                        int cb = Clamp255((int)(baseC.B * lam));
+                        // При активной подсветке — затенение 60 % к белому
+                        if (hasHi)
+                        {
+                            cr = Clamp255((int)(cr + (255 - cr) * 0.6));
+                            cg = Clamp255((int)(cg + (255 - cg) * 0.6));
+                            cb = Clamp255((int)(cb + (255 - cb) * 0.6));
+                        }
+                        fill = Color.FromArgb(255, cr, cg, cb);
+                    }
+
+                    zb.FillTriangle(
+                        triPts[i * 6 + 0], triPts[i * 6 + 1], vtxDepth[i * 3 + 0],
+                        triPts[i * 6 + 2], triPts[i * 6 + 3], vtxDepth[i * 3 + 1],
+                        triPts[i * 6 + 4], triPts[i * 6 + 5], vtxDepth[i * 3 + 2],
+                        fill.ToArgb());
                 }
 
-                // Отрисовка подсвеченной (оранжевая)
-                for (int i = 0; i < hiList.Count; i++)
-                {
-                    int idx = hiList[i];
-                    float nx = triNrm[idx * 3 + 0], ny = triNrm[idx * 3 + 1], nz = triNrm[idx * 3 + 2];
-                    float dot = nx * (float)lx + ny * (float)ly + nz * (float)lz;
-                    if (dot < 0) dot = -dot;
-                    float lam = 0.55f + 0.45f * dot;
-
-                    int cr = Clamp255((int)(255.0 * lam));
-                    int cg = Clamp255((int)(140.0 * lam));
-                    Color fill = Color.FromArgb(255, cr, cg, 0);
-
-                    Point[] pts = MakePts(triPts, idx);
-                    using (SolidBrush br = new SolidBrush(fill))
-                    {
-                        g.FillPolygon(br, pts);
-                    }
-                    if (drawEdges) g.DrawPolygon(edgePen, pts);
-                }
-
-                if (edgePen != null) edgePen.Dispose();
+                using (Bitmap bmp = zb.ToBitmap())
+                    g.DrawImageUnscaled(bmp, 0, 0);
 
                 // Плоскость сечения
                 if (_sectionEnabled) DrawSectionPlane(g, scale, cx, cyy, yawR, pitchR, planePos);
@@ -540,23 +521,12 @@ namespace Cad2Gdml.App
             }
             catch (Exception ex)
             {
-                // Небольшой текст об ошибке
                 using (Font f = new Font(FontFamily.GenericSansSerif, 9f))
                 using (Brush b = new SolidBrush(Color.Red))
                 {
                     e.Graphics.DrawString("Ошибка: " + ex.Message, f, b, 10, 10);
                 }
             }
-        }
-
-        private static Point[] MakePts(float[] arr, int idx)
-        {
-            return new Point[]
-            {
-                new Point((int)arr[idx * 6 + 0], (int)arr[idx * 6 + 1]),
-                new Point((int)arr[idx * 6 + 2], (int)arr[idx * 6 + 3]),
-                new Point((int)arr[idx * 6 + 4], (int)arr[idx * 6 + 5])
-            };
         }
 
         private static int Clamp255(int v)
