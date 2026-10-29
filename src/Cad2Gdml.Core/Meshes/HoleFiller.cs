@@ -8,11 +8,22 @@ namespace Cad2Gdml.Meshes
     // Заполнение отверстий (boundary loops) в сваренной сетке
     public static class HoleFiller
     {
-        // Ключ неориентированного ребра
-        private static long EKey(int a, int b)
+        // Неориентированный ключ ребра: lo < hi
+        private static long UndirKey(int a, int b, long vc)
         {
-            if (a > b) { int t = a; a = b; b = t; }
-            return ((long)a << 32) | (uint)b;
+            long lo, hi;
+            if (a <= b) { lo = a; hi = b; }
+            else { lo = b; hi = a; }
+            return lo * vc + hi;
+        }
+
+        // Увеличить счётчик ребра
+        private static void IncEdge(Dictionary<long, int> ec, int a, int b, long vc)
+        {
+            long k = UndirKey(a, b, vc);
+            int v;
+            ec.TryGetValue(k, out v);
+            ec[k] = v + 1;
         }
 
         public static Mesh Fill(Mesh welded, int maxLoopEdges, out int filled, out int skipped)
@@ -24,21 +35,19 @@ namespace Cad2Gdml.Meshes
                 return null;
 
             int triCount = welded.Indices.Count / 3;
+            long vc = (long)welded.Vertices.Count;
+            int cap = triCount * 3 / 2 + 1;
 
             // Подсчёт неориентированных рёбер
-            Dictionary<long, int> ec = new Dictionary<long, int>();
+            Dictionary<long, int> ec = new Dictionary<long, int>(cap);
             for (int t = 0; t < triCount; t++)
             {
                 int i0 = welded.Indices[t * 3];
                 int i1 = welded.Indices[t * 3 + 1];
                 int i2 = welded.Indices[t * 3 + 2];
-                long k0 = EKey(i0, i1);
-                long k1 = EKey(i1, i2);
-                long k2 = EKey(i2, i0);
-                int v0, v1, v2;
-                ec.TryGetValue(k0, out v0); ec[k0] = v0 + 1;
-                ec.TryGetValue(k1, out v1); ec[k1] = v1 + 1;
-                ec.TryGetValue(k2, out v2); ec[k2] = v2 + 1;
+                IncEdge(ec, i0, i1, vc);
+                IncEdge(ec, i1, i2, vc);
+                IncEdge(ec, i2, i0, vc);
             }
 
             // Граничные рёбра (count == 1), направление как в треугольнике
@@ -49,51 +58,41 @@ namespace Cad2Gdml.Meshes
                 int i0 = welded.Indices[t * 3];
                 int i1 = welded.Indices[t * 3 + 1];
                 int i2 = welded.Indices[t * 3 + 2];
-                if (ec[EKey(i0, i1)] == 1) { bA.Add(i0); bB.Add(i1); }
-                if (ec[EKey(i1, i2)] == 1) { bA.Add(i1); bB.Add(i2); }
-                if (ec[EKey(i2, i0)] == 1) { bA.Add(i2); bB.Add(i0); }
+                if (ec[UndirKey(i0, i1, vc)] == 1) { bA.Add(i0); bB.Add(i1); }
+                if (ec[UndirKey(i1, i2, vc)] == 1) { bA.Add(i1); bB.Add(i2); }
+                if (ec[UndirKey(i2, i0, vc)] == 1) { bA.Add(i2); bB.Add(i0); }
             }
 
             int nE = bA.Count;
             if (nE == 0) return null;
 
-            // Сортировка рёбер по (a, b)
+            // Сортировка рёбер по (a, b) — детерминированный порядок
             int[] ord = new int[nE];
             for (int i = 0; i < nE; i++) ord[i] = i;
-            Array.Sort(ord, delegate(int i, int j)
+            Array.Sort(ord, delegate(int x, int y)
             {
-                int c = bA[i].CompareTo(bA[j]);
+                int c = bA[x].CompareTo(bA[y]);
                 if (c != 0) return c;
-                return bB[i].CompareTo(bB[j]);
+                return bB[x].CompareTo(bB[y]);
             });
 
-            // Соседство: стартовая вершина -> рёбра
-            Dictionary<int, List<int>> adj = new Dictionary<int, List<int>>();
-            for (int i = 0; i < nE; i++)
+            // Соседство: стартовая вершина -> рёбра (уже отсортированы по b)
+            Dictionary<int, List<int>> adj = new Dictionary<int, List<int>>(nE);
+            for (int oi = 0; oi < nE; oi++)
             {
+                int ei = ord[oi];
                 List<int> lst;
-                if (!adj.TryGetValue(bA[i], out lst))
+                if (!adj.TryGetValue(bA[ei], out lst))
                 {
                     lst = new List<int>();
-                    adj[bA[i]] = lst;
+                    adj[bA[ei]] = lst;
                 }
-                lst.Add(i);
+                lst.Add(ei);
             }
 
-            // Сортировка списков по целевой вершине
-            HashSet<int> svSet = new HashSet<int>();
-            for (int i = 0; i < nE; i++) svSet.Add(bA[i]);
-            List<int> svList = new List<int>(svSet);
-            svList.Sort();
-            for (int si = 0; si < svList.Count; si++)
-            {
-                int sv = svList[si];
-                adj[sv].Sort(delegate(int x, int y) { return bB[x].CompareTo(bB[y]); });
-            }
-
-            // Поиск циклов
+            // Поиск циклов среди граничных рёбер
             bool[] used = new bool[nE];
-            List<List<int>> caps = new List<List<int>>();
+            List<List<int>> rawLoops = new List<List<int>>();
 
             for (int oi = 0; oi < nE; oi++)
             {
@@ -110,6 +109,7 @@ namespace Cad2Gdml.Meshes
                 int eUsed = 1;
                 bool closed = false;
                 bool valid = true;
+                int repeatPos = -1;
 
                 while (true)
                 {
@@ -126,6 +126,7 @@ namespace Cad2Gdml.Meshes
                         break;
                     }
 
+                    // Первое неиспользованное ребро (наименьшая целевая вершина)
                     int next = -1;
                     for (int j = 0; j < outs.Count; j++)
                     {
@@ -148,14 +149,16 @@ namespace Cad2Gdml.Meshes
                         break;
                     }
 
-                    bool dup = false;
-                    for (int k = 0; k < verts.Count; k++)
+                    // Повторная вершина — разбиваем
+                    int dup = -1;
+                    for (int k = 1; k < verts.Count; k++)
                     {
-                        if (verts[k] == nv) { dup = true; break; }
+                        if (verts[k] == nv) { dup = k; break; }
                     }
-                    if (dup)
+                    if (dup >= 0)
                     {
-                        valid = false;
+                        repeatPos = dup;
+                        closed = true;
                         break;
                     }
 
@@ -163,20 +166,110 @@ namespace Cad2Gdml.Meshes
                     curV = nv;
                 }
 
-                if (closed && valid && verts.Count >= 3 && verts.Count <= maxLoopEdges)
+                if (!closed || !valid)
                 {
-                    caps.Add(verts);
-                    filled++;
+                    // Не удалось замкнуть — пропускаем
+                    continue;
+                }
+
+                if (repeatPos < 0)
+                {
+                    // Обычный замкнутый контур
+                    rawLoops.Add(verts);
                 }
                 else
                 {
-                    skipped++;
+                    // Разбиение на два подконтoura в точке повтора
+                    int len1 = repeatPos + 1;
+                    int len2 = verts.Count - repeatPos;
+
+                    if (len1 >= 3)
+                    {
+                        List<int> l1 = new List<int>(len1);
+                        for (int i = 0; i <= repeatPos; i++) l1.Add(verts[i]);
+                        rawLoops.Add(l1);
+                    }
+                    if (len2 >= 3)
+                    {
+                        List<int> l2 = new List<int>(len2);
+                        for (int i = repeatPos; i < verts.Count; i++) l2.Add(verts[i]);
+                        rawLoops.Add(l2);
+                    }
                 }
             }
 
+            // Проверка выпуклости и формирование валидных крышек
+            List<List<int>> caps = new List<List<int>>();
+            int filledCnt = 0;
+            int skippedCnt = 0;
+
+            for (int ci = 0; ci < rawLoops.Count; ci++)
+            {
+                List<int> loop = rawLoops[ci];
+                int k = loop.Count;
+
+                if (k < 3 || k > maxLoopEdges)
+                {
+                    skippedCnt++;
+                    continue;
+                }
+
+                if (k > 3)
+                {
+                    // Нормаль Ньюэлла
+                    Vec3d N = new Vec3d(0.0, 0.0, 0.0);
+                    for (int i = 0; i < k; i++)
+                    {
+                        Vec3d vi = welded.Vertices[loop[i]];
+                        Vec3d vj = welded.Vertices[loop[(i + 1) % k]];
+                        N = N + vi.Cross(vj);
+                    }
+                    Vec3d negN = -N;
+
+                    // Центроид
+                    double cx = 0.0, cy = 0.0, cz = 0.0;
+                    for (int i = 0; i < k; i++)
+                    {
+                        Vec3d v = welded.Vertices[loop[i]];
+                        cx += v.X;
+                        cy += v.Y;
+                        cz += v.Z;
+                    }
+                    cx /= k;
+                    cy /= k;
+                    cz /= k;
+                    Vec3d centroid = new Vec3d(cx, cy, cz);
+
+                    // Проверка каждого треугольника вентилятора
+                    bool ok = true;
+                    for (int i = 0; i < k && ok; i++)
+                    {
+                        Vec3d va = welded.Vertices[loop[(i + 1) % k]];
+                        Vec3d vb = welded.Vertices[loop[i]];
+                        Vec3d e1 = va - centroid;
+                        Vec3d e2 = vb - centroid;
+                        Vec3d triN = e1.Cross(e2);
+                        if (triN.LengthSq() <= 1e-30) { ok = false; break; }
+                        if (triN.Dot(negN) <= 0.0) { ok = false; break; }
+                    }
+
+                    if (!ok)
+                    {
+                        skippedCnt++;
+                        continue;
+                    }
+                }
+
+                caps.Add(loop);
+                filledCnt++;
+            }
+
+            filled = filledCnt;
+            skipped = skippedCnt;
+
             if (caps.Count == 0) return null;
 
-            // Построение результирующей сетки
+            // Построение результирующей сетки (вход не изменяется)
             Mesh result = new Mesh();
             result.Vertices.AddRange(welded.Vertices);
             result.Indices.AddRange(welded.Indices);
@@ -186,6 +279,7 @@ namespace Cad2Gdml.Meshes
             {
                 List<int> loop = caps[ci];
                 int k = loop.Count;
+
                 if (k == 3)
                 {
                     // Треугольник с развёрнутым ходом
