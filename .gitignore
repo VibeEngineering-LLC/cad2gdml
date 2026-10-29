@@ -2,3 +2,6 @@ bin/
 obj/
 work/
 *.rejected.txt
+tools/ocpenv/
+dist/*.zip
+dist/cad2gdml-v0.[4-9]*/
