@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using Cad2Gdml.Pipeline;
 using Cad2Gdml.Scene;
 using Cad2Gdml.Materials;
+using Cad2Gdml.Report;
 
 namespace Cad2Gdml.App
 {
@@ -601,11 +602,8 @@ namespace Cad2Gdml.App
             if (result.Diagnostics != null && result.Diagnostics.Count > 0)
             {
                 sb.AppendLine("Диагностика:");
-                for (int i = 0; i < result.Diagnostics.Count; i++)
-                {
-                    Diagnostic d = result.Diagnostics[i];
-                    sb.AppendLine("  [" + d.Code + "] " + d.PartName + ": " + d.Message);
-                }
+                foreach (string gl in DiagnosticGrouper.Format(result.Diagnostics, true))
+                    sb.AppendLine(gl);
             }
             else
             {
@@ -633,10 +631,8 @@ namespace Cad2Gdml.App
             if (result.Diagnostics != null && result.Diagnostics.Count > 0)
             {
                 sb.AppendLine("=== Диагностика ===");
-                foreach (Diagnostic d in result.Diagnostics)
-                {
-                    sb.AppendLine("  [" + d.Code + "] " + d.Message);
-                }
+                foreach (string gl in DiagnosticGrouper.Format(result.Diagnostics, false))
+                    sb.AppendLine(gl);
                 sb.AppendLine();
             }
 

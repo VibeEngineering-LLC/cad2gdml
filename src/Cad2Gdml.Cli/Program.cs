@@ -251,6 +251,7 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --no-split                 Не разбивать деталь на связные тела");
             Console.WriteLine("  --no-repair                Не закрывать дыры в открытых сетках");
             Console.WriteLine("  --help, -h                 Эта справка");
+            Console.WriteLine("  Переменные: CAD2GDML_VERBOSE=1 (показать служебные сообщения), CAD2GDML_TRACE=1 (метки этапов), CAD2GDML_PYTHON (интерпретатор модуля STEP)");
         }
 
         // Итоговая печать: счётчики, пути, sha256, диагностика
@@ -287,13 +288,10 @@ namespace Cad2Gdml.Cli
             {
                 Console.WriteLine();
                 Console.WriteLine("Диагностика:");
-                for (int i = 0; i < result.Diagnostics.Count; i++)
-                {
-                    Diagnostic d = result.Diagnostics[i];
-                    Console.WriteLine("  " + d.Code + " [" + d.Severity.ToString() + "] "
-                        + (string.IsNullOrEmpty(d.PartName) ? "" : d.PartName + ": ")
-                        + d.Message);
-                }
+                // Режим подробной печати через переменную окружения
+                bool verbose = Environment.GetEnvironmentVariable("CAD2GDML_VERBOSE") == "1";
+                foreach (string gl in Cad2Gdml.Report.DiagnosticGrouper.Format(result.Diagnostics, verbose))
+                    Console.WriteLine(gl);
             }
 
             // Финальная строка: код, ID ошибки, сообщение
