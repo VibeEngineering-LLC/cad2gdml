@@ -328,6 +328,30 @@ namespace Cad2Gdml.Pipeline
                 }
 
                 p.Mesh = MeshWelder.Weld(p.Mesh, weldTol);
+
+                // устранение вырожденных треугольников
+                if (!o.NoRepair)
+                {
+                    int slivers;
+                    Mesh slivered = SliverRepair.Fix(p.Mesh, out slivers);
+                    if (slivers > 0)
+                    {
+                        // проверка: ремонт не должен ухудшать топологию
+                        TopologyReport tOld = MeshTopology.Analyze(p.Mesh);
+                        TopologyReport tNew = MeshTopology.Analyze(slivered);
+                        if (tNew.InconsistentEdges <= tOld.InconsistentEdges
+                            && tNew.OpenEdges <= tOld.OpenEdges
+                            && tNew.NonManifoldEdges <= tOld.NonManifoldEdges)
+                        {
+                            p.Mesh = slivered;
+                            scene.Add("I_SLIVER_FIXED", DiagSeverity.Info, p.Name, "убрано вырожденных треугольников (T-стыки): " + slivers.ToString(CultureInfo.InvariantCulture));
+                        }
+                        else
+                        {
+                            scene.Add("W_SLIVER_SKIPPED", DiagSeverity.Warning, p.Name, "вырожденные треугольники не убраны: ремонт ухудшал топологию");
+                        }
+                    }
+                }
             }
 
             if (!o.NoSplit)
