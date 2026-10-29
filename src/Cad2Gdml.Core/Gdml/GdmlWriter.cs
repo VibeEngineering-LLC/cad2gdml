@@ -62,8 +62,8 @@ namespace Cad2Gdml.Gdml
             string candidate;
             do
             {
-                candidate = name + "_" + i.ToString(CultureInfo.InvariantCulture);
-                if (candidate.Length > 64) candidate = candidate.Substring(0, 64);
+                string suffix = "_" + i.ToString(CultureInfo.InvariantCulture);
+                candidate = (name.Length + suffix.Length > 64 ? name.Substring(0, 64 - suffix.Length) : name) + suffix;
                 i++;
             }
             while (used.Contains(candidate));

@@ -55,6 +55,25 @@ namespace Cad2Gdml.Pipeline
     // Конвейер CAD → GDML
     public static class Cad2GdmlPipeline
     {
+        // -- трассировка этапов (CAD2GDML_TRACE=1) --
+        private static System.Diagnostics.Stopwatch _traceSw;
+        private static bool _traceChecked;
+
+        private static void Trace(string stage)
+        {
+            if (!_traceChecked)
+            {
+                _traceChecked = true;
+                string v = Environment.GetEnvironmentVariable("CAD2GDML_TRACE");
+                if (v != "1") return;
+                _traceSw = System.Diagnostics.Stopwatch.StartNew();
+            }
+            if (_traceSw == null) return;
+            long ms = _traceSw.ElapsedMilliseconds;
+            Console.Error.Write("[trace +" + ms.ToString(CultureInfo.InvariantCulture) + " ms] " + stage + Environment.NewLine);
+            Console.Error.Flush();
+        }
+
         public static PipelineResult Run(PipelineOptions o)
         {
             var result = new PipelineResult();
@@ -65,6 +84,7 @@ namespace Cad2Gdml.Pipeline
             try
             {
                 bool loaded;
+                Trace("load");
                 try
                 {
                     loaded = LoadInputs(o, scene);
@@ -80,26 +100,32 @@ namespace Cad2Gdml.Pipeline
                 if (!loaded)
                     return Fail(result);
 
+                Trace("meshes");
                 if (!ProcessMeshes(o, scene))
                     return Fail(result);
 
+                Trace("roles");
                 if (!AssignRoles(o, scene))
                     return Fail(result);
 
                 Part crystal = FindCrystal(scene);
                 if (crystal != null)
                 {
+                    Trace("frame");
                     if (!BuildFrame(o, scene, crystal))
                         return Fail(result);
                 }
 
+                Trace("recognize");
                 RecognizeShapes(scene);
 
+                Trace("materials");
                 if (!ResolveMaterials(o, scene))
                     return Fail(result);
 
                 SortParts(scene);
 
+                Trace("write");
                 try
                 {
                     if (!WriteOutputs(o, scene, result))
@@ -113,6 +139,7 @@ namespace Cad2Gdml.Pipeline
                 }
 
                 result.ExitCode = 0;
+                Trace("done");
                 return result;
             }
             catch (Exception ex)
@@ -164,12 +191,16 @@ namespace Cad2Gdml.Pipeline
 
                 if (ext == ".step" || ext == ".stp")
                 {
-                    scene.Add("E_STEP_NOT_SUPPORTED", DiagSeverity.Error, input,
-                        "Формат STEP не поддерживается в v0.1.");
-                    return false;
+                    string code, msg;
+                    var parts = StepImporter.Load(input, out code, out msg);
+                    if (parts == null)
+                    {
+                        scene.Add(code, DiagSeverity.Error, input, msg);
+                        return false;
+                    }
+                    AddParts(scene, parts, input);
                 }
-
-                if (ext == ".stl")
+                else if (ext == ".stl")
                 {
                     if (o.UnitToMm == 0.0)
                     {
@@ -254,6 +285,7 @@ namespace Cad2Gdml.Pipeline
 
             if (!o.NoSplit)
             {
+                Trace("split");
                 SplitConnectedComponents(scene);
             }
 
@@ -282,10 +314,13 @@ namespace Cad2Gdml.Pipeline
                 }
             }
 
+            Trace("topology");
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
                 if (p.Mesh == null) continue;
+
+                Trace("topology " + p.Name);
 
                 TopologyReport topo = MeshTopology.Analyze(p.Mesh);
 
@@ -641,6 +676,8 @@ namespace Cad2Gdml.Pipeline
             {
                 Part p = scene.Parts[i];
 
+                Trace("recognize " + p.Name);
+
                 string whyNot;
                 SolidShape shape = RevolutionRecognizer.TryRecognize(p, revOpt, out whyNot);
                 if (shape != null)
@@ -965,7 +1002,7 @@ namespace Cad2Gdml.Pipeline
         {
             if (code == null) return 9;
             if (code.StartsWith("E_FORMAT") || code.StartsWith("E_UNIT_MISSING")
-                || code.StartsWith("E_STEP_NOT_SUPPORTED"))
+                || code.StartsWith("E_STEP"))
                 return 2;
             if (code.StartsWith("E_MESH") || code.StartsWith("E_SCENE"))
                 return 3;

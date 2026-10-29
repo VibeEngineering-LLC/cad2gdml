@@ -218,9 +218,9 @@ namespace Cad2Gdml.App
             topTable.SetColumnSpan(flowBtns, 2);
             topTable.Controls.Add(flowBtns, 6, 2);
 
-            // --- Подпись про 3MF ---
+            // --- Подпись про 3MF и STEP ---
             var lblUnitNote = new Label();
-            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF)";
+            lblUnitNote.Text = "для 3MF единицы берутся из файла (только если все входы 3MF). STEP — в миллиметрах.";
             lblUnitNote.Font = new Font("Segoe UI", 9f, FontStyle.Italic);
             lblUnitNote.AutoSize = true;
             lblUnitNote.Dock = DockStyle.Top;
@@ -372,10 +372,7 @@ namespace Cad2Gdml.App
                     foreach (string f in dlg.FileNames)
                     {
                         if (!_lstInputs.Items.Contains(f))
-                        {
                             _lstInputs.Items.Add(f);
-                            CheckStepWarning(f);
-                        }
                     }
                     if (firstAdded)
                         AutoFillOutDir();
@@ -399,10 +396,7 @@ namespace Cad2Gdml.App
                     foreach (string file in SafeGetFiles(dir))
                     {
                         if (!_lstInputs.Items.Contains(file))
-                        {
                             _lstInputs.Items.Add(file);
-                            CheckStepWarning(file);
-                        }
                     }
                     if (firstAdded)
                         AutoFillOutDir();
@@ -452,12 +446,6 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            if (HasStepInput())
-            {
-                SetStatus("STEP пока не поддерживается в этой версии", false);
-                return;
-            }
-
             string outDir = _txtOutDir.Text.Trim();
             if (string.IsNullOrEmpty(outDir))
             {
@@ -487,7 +475,7 @@ namespace Cad2Gdml.App
 
             if (inputs.Count == 0)
             {
-                SetStatus("Нет поддерживаемых файлов (.stl/.obj/.3mf).", false);
+                SetStatus("Нет поддерживаемых файлов (.stl/.obj/.3mf/.step).", false);
                 return;
             }
 
@@ -747,33 +735,6 @@ namespace Cad2Gdml.App
                     hasOther = true;
             }
             return has3mf && hasOther;
-        }
-
-        private bool HasStepInput()
-        {
-            for (int i = 0; i < _lstInputs.Items.Count; i++)
-            {
-                string item = (string)_lstInputs.Items[i];
-                string ext = Path.GetExtension(item);
-                if (ext != null)
-                {
-                    string le = ext.ToLowerInvariant();
-                    if (le == ".step" || le == ".stp")
-                        return true;
-                }
-            }
-            return false;
-        }
-
-        private void CheckStepWarning(string file)
-        {
-            string ext = Path.GetExtension(file);
-            if (ext == null) return;
-            string le = ext.ToLowerInvariant();
-            if (le == ".step" || le == ".stp")
-            {
-                SetStatus("STEP пока не поддерживается в этой версии", false);
-            }
         }
 
         private void AutoFillOutDir()
