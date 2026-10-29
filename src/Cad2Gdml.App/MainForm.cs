@@ -80,29 +80,37 @@ namespace Cad2Gdml.App
             _cmbUnit.Size = new Size(56, 24);
             AddLabel(topPanel, "Ед.", 146, 34);
 
+            // Замечание про 3MF
+            var lblUnitNote = new Label();
+            lblUnitNote.Text = "для 3MF: из файла";
+            lblUnitNote.Font = new Font(this.Font, FontStyle.Italic);
+            lblUnitNote.AutoSize = true;
+            lblUnitNote.Location = new Point(204, 38);
+            topPanel.Controls.Add(lblUnitNote);
+
             _txtCrystal = new TextBox();
-            _txtCrystal.Location = new Point(214, 6);
+            _txtCrystal.Location = new Point(330, 6);
             _txtCrystal.Size = new Size(110, 24);
-            AddLabel(topPanel, "Кристалл:", 214, 34);
+            AddLabel(topPanel, "Кристалл:", 330, 34);
 
             _cmbFront = new ComboBox();
             _cmbFront.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbFront.Items.AddRange(new object[] { "auto", "+z", "-z" });
             _cmbFront.SelectedIndex = 0;
-            _cmbFront.Location = new Point(336, 6);
+            _cmbFront.Location = new Point(452, 6);
             _cmbFront.Size = new Size(56, 24);
-            AddLabel(topPanel, "Фронт:", 336, 34);
+            AddLabel(topPanel, "Фронт:", 452, 34);
 
             _txtOutDir = new TextBox();
-            _txtOutDir.Location = new Point(406, 6);
-            _txtOutDir.Size = new Size(210, 24);
-            AddLabel(topPanel, "Папка вывода:", 406, 34);
+            _txtOutDir.Location = new Point(522, 6);
+            _txtOutDir.Size = new Size(190, 24);
+            AddLabel(topPanel, "Папка вывода:", 522, 34);
 
-            _btnBrowseOut = MakeButton("Обзор…", 628, 6, 56, 26, OnBrowseOut);
+            _btnBrowseOut = MakeButton("Обзор…", 716, 6, 56, 26, OnBrowseOut);
 
             _btnConvert = new Button();
             _btnConvert.Text = "Конвертировать";
-            _btnConvert.Location = new Point(700, 6);
+            _btnConvert.Location = new Point(786, 6);
             _btnConvert.Size = new Size(130, 56);
             _btnConvert.Font = new Font(this.Font, FontStyle.Bold);
             _btnConvert.Click += OnConvert;
@@ -111,13 +119,13 @@ namespace Cad2Gdml.App
             _chkAllowDefault = new CheckBox();
             _chkAllowDefault.Text = "Разрешить вещество по умолчанию";
             _chkAllowDefault.Checked = false;
-            _chkAllowDefault.Location = new Point(146, 38);
+            _chkAllowDefault.Location = new Point(330, 38);
             _chkAllowDefault.AutoSize = true;
 
             _chkDropOpen = new CheckBox();
             _chkDropOpen.Text = "Пропускать открытые детали";
             _chkDropOpen.Checked = false;
-            _chkDropOpen.Location = new Point(400, 38);
+            _chkDropOpen.Location = new Point(560, 38);
             _chkDropOpen.AutoSize = true;
 
             topPanel.Controls.Add(_btnAddFiles);
@@ -245,7 +253,6 @@ namespace Cad2Gdml.App
                 if (dlg.ShowDialog(this) == DialogResult.OK)
                 {
                     _lastFolder = dlg.SelectedPath;
-                    // Добавляем только поддерживаемые файлы
                     string dir = dlg.SelectedPath;
                     foreach (string file in SafeGetFiles(dir))
                     {
@@ -278,7 +285,6 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // Папка вывода обязательна
             string outDir = _txtOutDir.Text.Trim();
             if (string.IsNullOrEmpty(outDir))
             {
@@ -286,7 +292,7 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // Собираем список входов (если папка — расширяем)
+            // Собираем список входов
             var inputs = new List<string>();
             foreach (string item in _lstInputs.Items)
             {
@@ -307,20 +313,25 @@ namespace Cad2Gdml.App
                 return;
             }
 
+            // Если все входы — 3MF, передаём 0 (единицы из файла); иначе — значение из ComboBox
+            double unitToMm;
+            if (AllAre3Mf(inputs))
+                unitToMm = 0.0;
+            else
+                unitToMm = GetUnitToMm();
+
             var opts = new PipelineOptions();
             opts.Inputs = inputs;
             opts.OutDir = outDir;
-            opts.UnitToMm = GetUnitToMm();
+            opts.UnitToMm = unitToMm;
             opts.UnitName = _cmbUnit.SelectedItem.ToString();
             opts.CrystalName = _txtCrystal.Text.Trim();
             opts.FrontSign = _cmbFront.SelectedItem.ToString();
             opts.AllowDefaultMaterial = _chkAllowDefault.Checked;
             opts.DropOpen = _chkDropOpen.Checked;
-            // BaseName оставляем пустым — конвейер выведёт из первого входа
 
             SetControlsEnabled(false);
             SetStatus("Конвертация…", true);
-            _picSketch.Image = null;
             _worker.RunWorkerAsync(opts);
         }
 
@@ -346,20 +357,15 @@ namespace Cad2Gdml.App
 
             if (result.ExitCode != 0)
             {
-                string msg = "Сбой (код " + result.ExitCode.ToString(CultureInfo.InvariantCulture) + ")";
-                if (result.Diagnostics != null && result.Diagnostics.Count > 0)
-                {
-                    Diagnostic last = result.Diagnostics[result.Diagnostics.Count - 1];
-                    msg += ": " + last.Message;
-                }
+                // Показываем первый Error-код и сообщение
+                string msg = result.MainErrorId + " — " + result.MainErrorMessage;
                 SetStatus(msg, false);
-                RenderReport(result);
                 return;
             }
 
             SetStatus("Готово → " + result.GdmlPath, true);
 
-            // Показ картинки через MemoryStream, чтобы не блокировать файл
+            // Показ картинки через MemoryStream
             if (!string.IsNullOrEmpty(result.PngPath) && File.Exists(result.PngPath))
             {
                 try
@@ -371,7 +377,7 @@ namespace Cad2Gdml.App
                 }
                 catch
                 {
-                    // Не критично — картинка не обязательна
+                    // Не критично
                 }
             }
 
@@ -437,6 +443,18 @@ namespace Cad2Gdml.App
             return 1.0;
         }
 
+        // Все ли файлы в списке — .3mf
+        private static bool AllAre3Mf(List<string> files)
+        {
+            for (int i = 0; i < files.Count; i++)
+            {
+                string ext = Path.GetExtension(files[i]);
+                if (ext == null || ext.ToLowerInvariant() != ".3mf")
+                    return false;
+            }
+            return true;
+        }
+
         // Вкл/выкл во время конвертации
         private void SetControlsEnabled(bool en)
         {
@@ -460,7 +478,7 @@ namespace Cad2Gdml.App
             _lblStatus.ForeColor = ok ? Color.Black : Color.Red;
         }
 
-        // Безопасное перечисление только *.stl, *.obj, *.3mf (без учёта регистра)
+        // Безопасное перечисление только *.stl, *.obj, *.3mf
         private static string[] SafeGetFiles(string dir)
         {
             try

@@ -17,10 +17,10 @@ namespace Cad2Gdml.Scene
     // Назначение ролей деталям сцены
     public static class RoleAssigner
     {
-        // Оборачивает шаблон: совпадение только в начале или после не-буквы
+        // Оборачивает шаблон: совпадение только на границах слова (левая и правая)
         private static string WrapPattern(string pattern)
         {
-            return "(^|[^\\p{L}])(" + pattern + ")";
+            return "(^|[^\\p{L}])(" + pattern + ")(?=$|[^\\p{L}])";
         }
 
         public static void Assign(SceneModel scene, RoleOptions opt, string crystalNameOverride)
@@ -73,7 +73,7 @@ namespace Cad2Gdml.Scene
                     overridePart.Role = PartRole.Crystal;
             }
 
-            // Шаблоны с word-boundary
+            // Шаблоны с word-boundary (левый и правый)
             string reCrystal   = WrapPattern(opt.CrystalRegex);
             string reContainer = WrapPattern(opt.ContainerRegex);
             string reSource    = WrapPattern(opt.SourceRegex);

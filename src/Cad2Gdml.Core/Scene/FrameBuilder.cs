@@ -24,7 +24,7 @@ namespace Cad2Gdml.Scene
         {
             // 1. Ось кристалла (собственный вектор тензора инерции)
             Vec3d axisDir;
-            if (!TryDetermineAxis(scene, crystal, out axisDir))
+            if (!TryDetermineAxis(scene, crystal, opt, out axisDir))
             {
                 throw new InvalidOperationException("E_AXIS_AMBIG: ось кристалла не определена.");
             }
@@ -46,7 +46,6 @@ namespace Cad2Gdml.Scene
             }
 
             // 4. Ось z кадра: от центра кристалла к переднему торцу
-            //    (тело кристалла занимает z ∈ [−L, 0], источники — z > 0)
             Vec3d zF = frontCenter - center;
             if (zF.LengthSq() < 1e-24)
             {
@@ -114,7 +113,6 @@ namespace Cad2Gdml.Scene
                 if (pv > vmax) { vmax = pv; }
             }
 
-            // Центр bbox: середина вдоль оси + центр перпендикулярной проекции
             double cz = (zmin + zmax) * 0.5;
             double cu = (umin + umax) * 0.5;
             double cv = (vmin + vmax) * 0.5;
@@ -140,7 +138,7 @@ namespace Cad2Gdml.Scene
         }
 
         // Ось кристалла: собственный вектор, отличный от двух близких
-        private static bool TryDetermineAxis(SceneModel scene, Part crystal, out Vec3d axis)
+        private static bool TryDetermineAxis(SceneModel scene, Part crystal, FrameOptions opt, out Vec3d axis)
         {
             axis = Vec3d.Zero;
 
@@ -156,7 +154,6 @@ namespace Cad2Gdml.Scene
             Vec3d[] vecs;
             Eigen3.Jacobi(tensor, out ev, out vecs);
 
-            // Значения отсортированы по возрастанию: l0 ≤ l1 ≤ l2
             double l0 = ev[0], l1 = ev[1], l2 = ev[2];
             Vec3d v0 = vecs[0], v1 = vecs[1], v2 = vecs[2];
 
@@ -176,12 +173,87 @@ namespace Cad2Gdml.Scene
                 return true;
             }
 
-            // Все три близки (или все различны) — используем bbox
-            return TryAxisFromBBox(crystal.Mesh, scene, crystal.Name, out axis);
+            // Все три близки — изотропный тензор, проверяем куб
+            if (pair01 && pair12)
+            {
+                Vec3d lo, hi;
+                crystal.Mesh.GetBounds(out lo, out hi);
+                double ex = Math.Abs(hi.X - lo.X);
+                double ey = Math.Abs(hi.Y - lo.Y);
+                double ez = Math.Abs(hi.Z - lo.Z);
+                double maxEdge = Math.Max(ex, Math.Max(ey, ez));
+
+                if (maxEdge > 0.0)
+                {
+                    // Все рёбра равны в пределах 1e-3 — куб, свободный выбор оси
+                    bool allEqual = Math.Abs(ex - maxEdge) / maxEdge < 1e-3
+                                 && Math.Abs(ey - maxEdge) / maxEdge < 1e-3
+                                 && Math.Abs(ez - maxEdge) / maxEdge < 1e-3;
+
+                    if (allEqual)
+                    {
+                        return ResolveCubeAxis(scene, crystal, opt, out axis);
+                    }
+                }
+            }
+
+            // Все различны или рёбра не равны — bbox-метод
+            return TryAxisFromBBox(crystal.Mesh, scene, crystal.Name, opt, out axis);
+        }
+
+        // Свободный выбор оси для куба
+        private static bool ResolveCubeAxis(SceneModel scene, Part crystal, FrameOptions opt, out Vec3d axis)
+        {
+            axis = Vec3d.Zero;
+            string sign = (opt.FrontSign ?? "auto").Trim();
+
+            // Явная FrontSign → file z
+            if (sign == "+z" || sign == "-z")
+            {
+                axis = new Vec3d(0, 0, 1);
+                return true;
+            }
+
+            // auto: направление к ЦМ других деталей
+            Vec3d com;
+            double mass;
+            if (TryNonCrystalCom(scene, crystal, out com, out mass))
+            {
+                Vec3d center = MeshProperties.Centroid(crystal.Mesh);
+                Vec3d dir = com - center;
+
+                if (dir.LengthSq() > 1e-24)
+                {
+                    double absX = Math.Abs(dir.X);
+                    double absY = Math.Abs(dir.Y);
+                    double absZ = Math.Abs(dir.Z);
+                    double maxComp = Math.Max(absX, Math.Max(absY, absZ));
+                    double tol = 1e-15 * Math.Max(maxComp, 1.0);
+
+                    // Приоритет осей: z, y, x
+                    if (Math.Abs(absZ - maxComp) < tol)
+                    {
+                        axis = new Vec3d(0, 0, dir.Z > 0.0 ? 1.0 : -1.0);
+                    }
+                    else if (Math.Abs(absY - maxComp) < tol)
+                    {
+                        axis = new Vec3d(0, dir.Y > 0.0 ? 1.0 : -1.0, 0);
+                    }
+                    else
+                    {
+                        axis = new Vec3d(dir.X > 0.0 ? 1.0 : -1.0, 0, 0);
+                    }
+                    return true;
+                }
+            }
+
+            // Нет других деталей или направление неопределено → file +z
+            axis = new Vec3d(0, 0, 1);
+            return true;
         }
 
         // Ось — самое длинное ребро bounding box
-        private static bool TryAxisFromBBox(Mesh mesh, SceneModel scene, string name, out Vec3d axis)
+        private static bool TryAxisFromBBox(Mesh mesh, SceneModel scene, string name, FrameOptions opt, out Vec3d axis)
         {
             axis = Vec3d.Zero;
             Vec3d lo, hi;
@@ -200,6 +272,14 @@ namespace Cad2Gdml.Scene
 
             if (cnt > 1)
             {
+                // Несколько рёбер близки к самому длинному
+                string sign = (opt.FrontSign ?? "auto").Trim();
+                if (sign == "+z" || sign == "-z")
+                {
+                    // Явная FrontSign — используем file z
+                    axis = new Vec3d(0, 0, 1);
+                    return true;
+                }
                 scene.Add("E_AXIS_AMBIG", DiagSeverity.Error, name,
                     "Рёбра bbox близки — ось неоднозначна.");
                 return false;
@@ -228,22 +308,16 @@ namespace Cad2Gdml.Scene
 
             if (sign == "+z" || sign == "-z")
             {
-                // +z/-z — знак file-Z компоненты оси;
-                // при |d.Z| < 1e-9 — знак доминирующей компоненты оси:
-                //   +z → торец, где доминирующая координата положительна
-                //   -z → противоположный торец
                 Vec3d d = (facePlus - faceMinus).Normalized();
                 bool wantPlus = (sign == "+z");
 
                 if (Math.Abs(d.Z) >= 1e-9)
                 {
-                    // Ось имеет Z-компоненту
                     bool plusIsFront = (d.Z > 0.0);
                     front = (plusIsFront == wantPlus) ? facePlus : faceMinus;
                 }
                 else
                 {
-                    // Ось ⟂ Z: берём доминирующую компоненту
                     double ax = Math.Abs(d.X);
                     double ay = Math.Abs(d.Y);
                     double domVal;

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
+using System.Xml;
 using System.Xml.Linq;
 using Cad2Gdml.Geometry;
 using Cad2Gdml.Meshes;
@@ -13,6 +14,9 @@ namespace Cad2Gdml.Import
     // Импортёр 3MF
     public static class ThreeMfImporter
     {
+        private const int MaxDepth = 32;
+        private const int MaxTotalTriangles = 50000000;
+
         // Безопасный разбор числа: запятая = ошибка, NaN/Inf = ошибка
         private static double SafeParse(string s, string ctx)
         {
@@ -40,12 +44,66 @@ namespace Cad2Gdml.Import
             return v;
         }
 
+        // Разбор индекса вершины с валидацией
+        private static int SafeParseIndex(string s, int vertexCount)
+        {
+            if (s == null)
+            {
+                throw new InvalidDataException("3MF: bad vertex index");
+            }
+            double v;
+            try
+            {
+                v = double.Parse(s, NumberStyles.Float, CultureInfo.InvariantCulture);
+            }
+            catch (FormatException)
+            {
+                throw new InvalidDataException("3MF: bad vertex index");
+            }
+            catch (OverflowException)
+            {
+                throw new InvalidDataException("3MF: bad vertex index");
+            }
+            if (double.IsNaN(v) || double.IsInfinity(v))
+            {
+                throw new InvalidDataException("3MF: bad vertex index");
+            }
+            if (v < 0.0 || v >= vertexCount)
+            {
+                throw new InvalidDataException("3MF: bad vertex index");
+            }
+            int idx = (int)v;
+            if ((double)idx != v)
+            {
+                throw new InvalidDataException("3MF: bad vertex index");
+            }
+            return idx;
+        }
+
+        // Безопасная загрузка XML без DTD
+        private static XDocument LoadXmlSecure(Stream s, string ctx)
+        {
+            try
+            {
+                XmlReaderSettings settings = new XmlReaderSettings();
+                settings.DtdProcessing = DtdProcessing.Prohibit;
+                settings.XmlResolver = null;
+                using (XmlReader reader = XmlReader.Create(s, settings))
+                {
+                    return XDocument.Load(reader);
+                }
+            }
+            catch (XmlException ex)
+            {
+                throw new InvalidDataException("3MF: XML error: " + ctx, ex);
+            }
+        }
+
         // Загрузка 3MF файла
         public static IList<Part> Load(string path, double unitOverrideToMm)
         {
             List<Part> parts = new List<Part>();
 
-            // Не-ZIP или отсутствующий файл -> InvalidDataException
             ZipArchive zip;
             try
             {
@@ -75,9 +133,8 @@ namespace Cad2Gdml.Import
 
                 using (Stream s = entry.Open())
                 {
-                    XDocument doc = XDocument.Load(s);
+                    XDocument doc = LoadXmlSecure(s, "model");
 
-                    // Множитель единиц -> мм
                     double unitToMm;
                     if (unitOverrideToMm > 0.0)
                     {
@@ -97,13 +154,17 @@ namespace Cad2Gdml.Import
                     Dictionary<string, XElement> objects = ParseObjects(doc);
                     List<XElement> buildItems = GetBuildItems(doc);
 
-                    // Пустая модель — ошибка
                     if (buildItems.Count == 0)
                     {
                         throw new InvalidDataException("3MF: empty model (no build items)");
                     }
 
+                    // Кэш локальных мешей по id объекта
+                    Dictionary<string, Mesh> localCache = new Dictionary<string, Mesh>();
+                    HashSet<string> resolving = new HashSet<string>();
+
                     Dictionary<string, int> nameCounters = new Dictionary<string, int>();
+                    long totalTriangles = 0;
 
                     for (int i = 0; i < buildItems.Count; i++)
                     {
@@ -142,12 +203,31 @@ namespace Cad2Gdml.Import
                             nameCounters[baseName] = 1;
                         }
 
-                        Mesh mesh = ResolveObject(objects, objectId, itemTf, 0, unitToMm);
+                        // Локальный меш (в модельных единицах, без трансформации build item)
+                        Mesh local = ResolveLocal(objects, objectId, resolving, 0, localCache);
+
+                        // Применяем трансформацию build item
+                        Mesh transformed = local.Transformed(itemTf);
+
+                        // Масштабирование на мм
+                        Mesh scaled = new Mesh();
+                        for (int vi = 0; vi < transformed.Vertices.Count; vi++)
+                        {
+                            Vec3d p = transformed.Vertices[vi];
+                            scaled.Vertices.Add(new Vec3d(p.X * unitToMm, p.Y * unitToMm, p.Z * unitToMm));
+                        }
+                        scaled.Indices.AddRange(transformed.Indices);
+
+                        totalTriangles += scaled.TriangleCount;
+                        if (totalTriangles > MaxTotalTriangles)
+                        {
+                            throw new InvalidDataException("3MF: too large");
+                        }
 
                         Part part = new Part();
                         part.Name = finalName;
                         part.OrigName = finalName;
-                        part.Mesh = mesh;
+                        part.Mesh = scaled;
                         part.SourceFile = path;
 
                         parts.Add(part);
@@ -171,7 +251,7 @@ namespace Cad2Gdml.Import
             {
                 using (Stream s = relsEntry.Open())
                 {
-                    XDocument doc = XDocument.Load(s);
+                    XDocument doc = LoadXmlSecure(s, "rels");
                     foreach (XElement el in doc.Descendants())
                     {
                         if (el.Name.LocalName != "Relationship")
@@ -343,56 +423,89 @@ namespace Cad2Gdml.Import
                 new Vec3d(m30, m31, m32));
         }
 
-        // Рекурсивное разрешение объекта в меш (с масштабом на мм)
-        private static Mesh ResolveObject(Dictionary<string, XElement> objects, string objectId, Affine3 transform, int depth, double unitToMm)
+        // Рекурсивное разрешение локального меша объекта (в модельных единицах)
+        private static Mesh ResolveLocal(
+            Dictionary<string, XElement> objects,
+            string objectId,
+            HashSet<string> resolving,
+            int depth,
+            Dictionary<string, Mesh> cache)
         {
-            if (depth > 128)
+            // Проверка глубины
+            if (depth > MaxDepth)
             {
-                return new Mesh();
+                throw new InvalidDataException("3MF: component depth exceeded");
+            }
+
+            // Обнаружение цикла
+            if (resolving.Contains(objectId))
+            {
+                throw new InvalidDataException("3MF: component cycle");
+            }
+
+            // Кэш: объект уже разрешён
+            Mesh cached;
+            if (cache.TryGetValue(objectId, out cached))
+            {
+                return cached;
             }
 
             XElement objEl;
             if (!objects.TryGetValue(objectId, out objEl))
             {
-                return new Mesh();
+                throw new InvalidDataException("3MF: unknown object id: " + objectId);
             }
 
-            XElement meshEl = FindElement(objEl, "mesh");
-            if (meshEl != null)
+            resolving.Add(objectId);
+            try
             {
-                return BuildMeshFromElement(meshEl, transform, unitToMm);
-            }
-
-            XElement componentsEl = FindElement(objEl, "components");
-            if (componentsEl != null)
-            {
-                Mesh result = new Mesh();
-                foreach (XElement comp in componentsEl.Elements())
+                Mesh local;
+                XElement meshEl = FindElement(objEl, "mesh");
+                if (meshEl != null)
                 {
-                    if (comp.Name.LocalName != "component")
-                    {
-                        continue;
-                    }
-                    string childId = GetAttr(comp, "objectid");
-                    if (string.IsNullOrEmpty(childId))
-                    {
-                        continue;
-                    }
-                    string childTfStr = GetAttr(comp, "transform");
-                    Affine3 childTf = ParseTransform(childTfStr);
-                    Affine3 effective = transform.Multiply(childTf);
-
-                    Mesh childMesh = ResolveObject(objects, childId, effective, depth + 1, unitToMm);
-                    result.Append(childMesh);
+                    local = BuildLocalMesh(meshEl);
                 }
-                return result;
-            }
+                else
+                {
+                    XElement componentsEl = FindElement(objEl, "components");
+                    if (componentsEl != null)
+                    {
+                        local = new Mesh();
+                        foreach (XElement comp in componentsEl.Elements())
+                        {
+                            if (comp.Name.LocalName != "component")
+                            {
+                                continue;
+                            }
+                            string childId = GetAttr(comp, "objectid");
+                            if (string.IsNullOrEmpty(childId))
+                            {
+                                continue;
+                            }
+                            string childTfStr = GetAttr(comp, "transform");
+                            Affine3 childTf = ParseTransform(childTfStr);
+                            Mesh childLocal = ResolveLocal(objects, childId, resolving, depth + 1, cache);
+                            Mesh childTransformed = childLocal.Transformed(childTf);
+                            local.Append(childTransformed);
+                        }
+                    }
+                    else
+                    {
+                        local = new Mesh();
+                    }
+                }
 
-            return new Mesh();
+                cache[objectId] = local;
+                return local;
+            }
+            finally
+            {
+                resolving.Remove(objectId);
+            }
         }
 
-        // Построение меша из <mesh>; итоговые координаты масштабируются на unitToMm
-        private static Mesh BuildMeshFromElement(XElement meshEl, Affine3 transform, double unitToMm)
+        // Построение локального меша из <mesh> (без трансформации и масштабирования)
+        private static Mesh BuildLocalMesh(XElement meshEl)
         {
             List<Vec3d> vertices = new List<Vec3d>();
             XElement verticesEl = FindElement(meshEl, "vertices");
@@ -418,6 +531,7 @@ namespace Cad2Gdml.Import
                 }
             }
 
+            int vertexCount = vertices.Count;
             List<int> indices = new List<int>();
             XElement trianglesEl = FindElement(meshEl, "triangles");
             if (trianglesEl != null)
@@ -431,29 +545,21 @@ namespace Cad2Gdml.Import
                     string s1 = GetAttr(tEl, "v1");
                     string s2 = GetAttr(tEl, "v2");
                     string s3 = GetAttr(tEl, "v3");
-                    if (s1 == null || s2 == null || s3 == null)
-                    {
-                        continue;
-                    }
-                    int v1 = (int)SafeParse(s1, "triangle.v1");
-                    int v2 = (int)SafeParse(s2, "triangle.v2");
-                    int v3 = (int)SafeParse(s3, "triangle.v3");
+
+                    // Валидация индексов
+                    int v1 = SafeParseIndex(s1, vertexCount);
+                    int v2 = SafeParseIndex(s2, vertexCount);
+                    int v3 = SafeParseIndex(s3, vertexCount);
+
                     indices.Add(v1);
                     indices.Add(v2);
                     indices.Add(v3);
                 }
             }
 
-            // Применяем трансформацию и масштабируем на мм
             Mesh result = new Mesh();
-            for (int i = 0; i < vertices.Count; i++)
-            {
-                Vec3d p = transform.Apply(vertices[i]);
-                // Перенос и координаты в модельных единицах -> умножаем на unitToMm
-                result.Vertices.Add(new Vec3d(p.X * unitToMm, p.Y * unitToMm, p.Z * unitToMm));
-            }
+            result.Vertices.AddRange(vertices);
             result.Indices.AddRange(indices);
-
             return result;
         }
     }

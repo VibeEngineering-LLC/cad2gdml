@@ -20,7 +20,8 @@ namespace Cad2Gdml.Materials
     {
         public string Pattern;
         public string Material;
-        public bool IsGuess; // true если совпадение по общим словам (crystal/scint)
+        public bool IsGuess;
+        public bool IsFileRule; // true — правило из файла, case-sensitive
     }
 
     // Библиотека веществ и правил назначения
@@ -29,9 +30,14 @@ namespace Cad2Gdml.Materials
         public Dictionary<string, MaterialDef> Materials;
         public List<MaterialRule> Rules;
         public string DefaultMaterial;
-
-        // Установлено при совпадении по общим словам (crystal/кристалл/scint)
+        public bool DefaultFromFile; // stl_default задан в materials.json
         public bool LastResolveWasGuess;
+
+        // Проверка: имя является имплицитной NIST-ссылкой (G4_*)
+        public bool IsNistRef(string name)
+        {
+            return name != null && name.StartsWith("G4_", StringComparison.Ordinal);
+        }
 
         // Встроенная библиотека с NIST-веществами
         public static MaterialLibrary Default()
@@ -42,7 +48,7 @@ namespace Cad2Gdml.Materials
             lib.DefaultMaterial = "G4_AIR";
             lib.LastResolveWasGuess = false;
 
-            // NIST
+            // NIST-вещества
             lib.Materials["G4_AIR"] = Nist("G4_AIR", 0.001205,
                 new KeyValuePair<string, double>("N", 0.75527),
                 new KeyValuePair<string, double>("O", 0.231917),
@@ -66,7 +72,7 @@ namespace Cad2Gdml.Materials
                 new KeyValuePair<string, double>("H", 0.143711),
                 new KeyValuePair<string, double>("C", 0.856289));
 
-            // Свои
+            // Свои вещества
             lib.Materials["NaI"] = Custom("NaI", 3.67,
                 new KeyValuePair<string, double>("Na", 0.1534),
                 new KeyValuePair<string, double>("I", 0.8466));
@@ -77,19 +83,19 @@ namespace Cad2Gdml.Materials
                 new KeyValuePair<string, double>("Cs", 0.5113),
                 new KeyValuePair<string, double>("I", 0.4887));
 
-            // Правила — границы: альтернатива в начале или после небуквы
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(nai)", Material = "NaI", IsGuess = false });
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(crystal|кристалл|scint)", Material = "NaI", IsGuess = true });
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(shell|housing|case|корпус|оболоч)", Material = "G4_Al", IsGuess = false });
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(water|вода|sample|проб)", Material = "G4_WATER", IsGuess = false });
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(lead|pb|свинец)", Material = "G4_Pb", IsGuess = false });
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(cu|copper|медь)", Material = "G4_Cu", IsGuess = false });
-            lib.Rules.Add(new MaterialRule { Pattern = "(^|[^\\p{L}])(air|воздух)", Material = "G4_AIR", IsGuess = false });
+            // Встроенные правила: границы и слева, и справа
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(nai)(?=$|[^\\p{L}])", "NaI", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(crystal|кристалл|scint)(?=$|[^\\p{L}])", "NaI", true));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(shell|housing|case|корпус|оболоч)(?=$|[^\\p{L}])", "G4_Al", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(water|вода|sample|проб)(?=$|[^\\p{L}])", "G4_WATER", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(lead|pb|свинец)(?=$|[^\\p{L}])", "G4_Pb", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(cu|copper|медь)(?=$|[^\\p{L}])", "G4_Cu", false));
+            lib.Rules.Add(Builtin("(^|[^\\p{L}])(air|воздух)(?=$|[^\\p{L}])", "G4_AIR", false));
 
             return lib;
         }
 
-        // Поиск вещества по имени (регистронезависимо), возвращает def с каноническим Name
+        // Поиск вещества по имени (регистронезависимо)
         public MaterialDef Find(string name)
         {
             if (name == null) return null;
@@ -99,7 +105,7 @@ namespace Cad2Gdml.Materials
             return null;
         }
 
-        // Назначение: первое совпавшее правило -> имя вещества, иначе null
+        // Назначение: первое совпавшее правило -> имя вещества
         public string Resolve(string partName)
         {
             LastResolveWasGuess = false;
@@ -109,7 +115,12 @@ namespace Cad2Gdml.Materials
                 if (string.IsNullOrEmpty(rule.Pattern)) continue;
                 try
                 {
-                    if (Regex.IsMatch(partName, rule.Pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                    bool matched;
+                    if (rule.IsFileRule)
+                        matched = Regex.IsMatch(partName, rule.Pattern, RegexOptions.CultureInvariant);
+                    else
+                        matched = Regex.IsMatch(partName, rule.Pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                    if (matched)
                     {
                         LastResolveWasGuess = rule.IsGuess;
                         return rule.Material;
@@ -123,143 +134,68 @@ namespace Cad2Gdml.Materials
             return null;
         }
 
-        // Загрузка из JSON (две схемы состава, валидация)
+        // Загрузка из JSON: custom (list/dict), stl_rules, stl_default
         public static MaterialLibrary LoadJson(string path)
         {
-            string text = File.ReadAllText(path);
+            string text = File.ReadAllText(path); // FileNotFoundException при отсутствии
             object root = Cad2Gdml.Json.MiniJson.Parse(text);
 
             var dict = root as Dictionary<string, object>;
             if (dict == null)
                 throw new InvalidDataException("E_MAT_ROOT: корень JSON не является объектом");
 
-            var lib = new MaterialLibrary();
-            lib.Materials = new Dictionary<string, MaterialDef>(StringComparer.OrdinalIgnoreCase);
-            lib.Rules = new List<MaterialRule>();
-            lib.DefaultMaterial = "G4_AIR";
-            lib.LastResolveWasGuess = false;
+            // База — встроенная библиотека
+            var lib = Default();
 
-            // Ключ "custom"
+            // Ключ "custom": словарь {name:{...}} или список [{name,...}]
             object customObj;
             if (dict.TryGetValue("custom", out customObj))
             {
-                var custom = customObj as Dictionary<string, object>;
-                if (custom != null)
+                var cd = customObj as Dictionary<string, object>;
+                if (cd != null)
                 {
-                    foreach (KeyValuePair<string, object> kv in custom)
+                    foreach (KeyValuePair<string, object> kv in cd)
+                        ParseCustomEntry(lib, kv.Key, kv.Value);
+                }
+                else
+                {
+                    var cl = customObj as List<object>;
+                    if (cl != null)
                     {
-                        var matDict = kv.Value as Dictionary<string, object>;
-                        if (matDict == null) continue;
-
-                        // Плотность: "density" или "density_g_cm3"
-                        double density = 0.0;
-                        bool hasDensity = false;
-
-                        object densObj;
-                        if (matDict.TryGetValue("density", out densObj))
+                        foreach (object item in cl)
                         {
-                            density = ToDouble(densObj);
-                            hasDensity = true;
+                            var entry = item as Dictionary<string, object>;
+                            if (entry == null) continue;
+                            string nm = null;
+                            object nmObj;
+                            if (entry.TryGetValue("name", out nmObj))
+                                nm = nmObj as string;
+                            if (string.IsNullOrEmpty(nm)) continue;
+                            ParseCustomEntry(lib, nm, entry);
                         }
-                        if (!hasDensity)
-                        {
-                            object densGObj;
-                            if (matDict.TryGetValue("density_g_cm3", out densGObj))
-                            {
-                                density = ToDouble(densGObj);
-                                hasDensity = true;
-                            }
-                        }
-
-                        if (!hasDensity || density <= 0.0)
-                            throw new InvalidDataException("E_MAT_DENSITY: некорректная плотность для '" + kv.Key + "'");
-
-                        // Состав: "elements" (dict) или "fractions" (list of [ref, frac])
-                        var fractions = new List<KeyValuePair<string, double>>();
-
-                        object elemObj;
-                        if (matDict.TryGetValue("elements", out elemObj))
-                        {
-                            var elems = elemObj as Dictionary<string, object>;
-                            if (elems != null)
-                            {
-                                foreach (KeyValuePair<string, object> e in elems)
-                                {
-                                    fractions.Add(new KeyValuePair<string, double>(e.Key, ToDouble(e.Value)));
-                                }
-                            }
-                        }
-
-                        if (fractions.Count == 0)
-                        {
-                            object fracObj;
-                            if (matDict.TryGetValue("fractions", out fracObj))
-                            {
-                                var fracList = fracObj as List<object>;
-                                if (fracList != null)
-                                {
-                                    foreach (object item in fracList)
-                                    {
-                                        var pair = item as List<object>;
-                                        if (pair == null || pair.Count < 2) continue;
-                                        string refName = pair[0] as string;
-                                        double fracVal = ToDouble(pair[1]);
-                                        if (refName != null)
-                                            fractions.Add(new KeyValuePair<string, double>(refName, fracVal));
-                                    }
-                                }
-                            }
-                        }
-
-                        if (fractions.Count == 0)
-                            throw new InvalidDataException("E_MAT_COMPO: пустой состав для '" + kv.Key + "'");
-
-                        // Нормализация долей: сумма ≈ 1 -> нормализуем, иначе ошибка
-                        double sum = 0.0;
-                        for (int i = 0; i < fractions.Count; i++)
-                            sum += fractions[i].Value;
-
-                        if (Math.Abs(sum - 1.0) <= 1e-3)
-                        {
-                            for (int i = 0; i < fractions.Count; i++)
-                            {
-                                double norm = fractions[i].Value / sum;
-                                fractions[i] = new KeyValuePair<string, double>(fractions[i].Key, norm);
-                            }
-                        }
-                        else
-                        {
-                            throw new InvalidDataException(
-                                "E_MAT_FRAC: сумма долей = " + sum.ToString("R", CultureInfo.InvariantCulture) + " для '" + kv.Key + "'");
-                        }
-
-                        lib.Materials[kv.Key] = new MaterialDef
-                        {
-                            Name = kv.Key,
-                            DensityGcm3 = density,
-                            MassFractions = fractions,
-                            IsNist = false
-                        };
                     }
                 }
             }
 
-            // Ключ "stl_rules"
+            // Ключ "stl_rules": правила из файла, case-sensitive, без границ
             object rulesObj;
             if (dict.TryGetValue("stl_rules", out rulesObj))
             {
-                var rulesList = rulesObj as List<object>;
-                if (rulesList != null)
+                var rl = rulesObj as List<object>;
+                if (rl != null)
                 {
-                    foreach (object item in rulesList)
+                    var fileRules = new List<MaterialRule>();
+                    foreach (object item in rl)
                     {
                         var pair = item as List<object>;
                         if (pair == null || pair.Count < 2) continue;
-                        string pattern = pair[0] as string;
-                        string material = pair[1] as string;
-                        if (pattern != null && material != null)
-                            lib.Rules.Add(new MaterialRule { Pattern = pattern, Material = material, IsGuess = false });
+                        string pat = pair[0] as string;
+                        string mat = pair[1] as string;
+                        if (pat != null && mat != null)
+                            fileRules.Add(new MaterialRule { Pattern = pat, Material = mat, IsGuess = false, IsFileRule = true });
                     }
+                    // Файловые правила — ПЕРВЫМИ
+                    lib.Rules.InsertRange(0, fileRules);
                 }
             }
 
@@ -267,22 +203,121 @@ namespace Cad2Gdml.Materials
             object defObj;
             if (dict.TryGetValue("stl_default", out defObj))
             {
-                string defStr = defObj as string;
-                if (defStr != null)
-                    lib.DefaultMaterial = defStr;
+                string ds = defObj as string;
+                if (ds != null)
+                    lib.DefaultMaterial = ds;
+                    lib.DefaultFromFile = true;
             }
 
-            // Проверка: каждое правило ссылается на существующее вещество
+            // Валидация: материал правила/default должен быть определён или G4_*
             foreach (MaterialRule rule in lib.Rules)
             {
-                if (rule.Material != null && !lib.Materials.ContainsKey(rule.Material))
+                if (rule.Material == null) continue;
+                if (!lib.Materials.ContainsKey(rule.Material) && !lib.IsNistRef(rule.Material))
                     throw new InvalidDataException("E_MAT_UNKNOWN: " + rule.Material);
             }
+            if (lib.DefaultMaterial != null && !lib.Materials.ContainsKey(lib.DefaultMaterial) && !lib.IsNistRef(lib.DefaultMaterial))
+                throw new InvalidDataException("E_MAT_UNKNOWN: " + lib.DefaultMaterial);
 
             return lib;
         }
 
-        // Создание NIST-записи
+        // Разбор одного custom-вещества из JSON
+        private static void ParseCustomEntry(MaterialLibrary lib, string name, object raw)
+        {
+            var md = raw as Dictionary<string, object>;
+            if (md == null) return;
+
+            // Плотность
+            double density = 0.0;
+            bool hasD = false;
+            object dObj;
+            if (md.TryGetValue("density", out dObj))
+            {
+                density = ToDouble(dObj);
+                hasD = true;
+            }
+            if (!hasD)
+            {
+                object dGObj;
+                if (md.TryGetValue("density_g_cm3", out dGObj))
+                {
+                    density = ToDouble(dGObj);
+                    hasD = true;
+                }
+            }
+            if (!hasD || density <= 0.0)
+                throw new InvalidDataException("E_MAT_DENSITY: некорректная плотность для '" + name + "'");
+
+            // Состав: "elements" (dict) или "fractions" (list of [ref, frac])
+            var fractions = new List<KeyValuePair<string, double>>();
+            object elemObj;
+            if (md.TryGetValue("elements", out elemObj))
+            {
+                var elems = elemObj as Dictionary<string, object>;
+                if (elems != null)
+                {
+                    foreach (KeyValuePair<string, object> e in elems)
+                        fractions.Add(new KeyValuePair<string, double>(e.Key, ToDouble(e.Value)));
+                }
+            }
+            if (fractions.Count == 0)
+            {
+                object fracObj;
+                if (md.TryGetValue("fractions", out fracObj))
+                {
+                    var fl = fracObj as List<object>;
+                    if (fl != null)
+                    {
+                        foreach (object item in fl)
+                        {
+                            var pair = item as List<object>;
+                            if (pair == null || pair.Count < 2) continue;
+                            string refName = pair[0] as string;
+                            double fv = ToDouble(pair[1]);
+                            if (refName != null)
+                                fractions.Add(new KeyValuePair<string, double>(refName, fv));
+                        }
+                    }
+                }
+            }
+            if (fractions.Count == 0)
+                throw new InvalidDataException("E_MAT_COMPO: пустой состав для '" + name + "'");
+
+            // Нормализация долей
+            double sum = 0.0;
+            for (int i = 0; i < fractions.Count; i++)
+                sum += fractions[i].Value;
+            if (Math.Abs(sum - 1.0) <= 1e-3)
+            {
+                for (int i = 0; i < fractions.Count; i++)
+                {
+                    double norm = fractions[i].Value / sum;
+                    fractions[i] = new KeyValuePair<string, double>(fractions[i].Key, norm);
+                }
+            }
+            else
+            {
+                throw new InvalidDataException(
+                    "E_MAT_FRAC: сумма долей = " + sum.ToString("R", CultureInfo.InvariantCulture) + " для '" + name + "'");
+            }
+
+            lib.Materials[name] = new MaterialDef
+            {
+                Name = name,
+                DensityGcm3 = density,
+                MassFractions = fractions,
+                IsNist = false
+            };
+        }
+
+        // Встроенное правило
+        private static MaterialRule Builtin(string pattern, string material, bool isGuess)
+        {
+            return new MaterialRule { Pattern = pattern, Material = material, IsGuess = isGuess, IsFileRule = false };
+        }
+
+        // NIST-запись
         private static MaterialDef Nist(string name, double density, params KeyValuePair<string, double>[] fr)
         {
             return new MaterialDef
@@ -294,7 +329,7 @@ namespace Cad2Gdml.Materials
             };
         }
 
-        // Создание custom-записи
+        // Custom-запись
         private static MaterialDef Custom(string name, double density, params KeyValuePair<string, double>[] fr)
         {
             return new MaterialDef
@@ -306,7 +341,7 @@ namespace Cad2Gdml.Materials
             };
         }
 
-        // Преобразование объекта JSON в double
+        // JSON-объект -> double
         private static double ToDouble(object o)
         {
             if (o == null) return 0.0;

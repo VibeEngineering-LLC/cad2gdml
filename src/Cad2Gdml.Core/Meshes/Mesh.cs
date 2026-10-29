@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using Cad2Gdml.Geometry;
 
 namespace Cad2Gdml.Meshes
@@ -138,12 +139,12 @@ namespace Cad2Gdml.Meshes
     // Сварка: объединение близлежащих вершин через грид-хэш
     public static class MeshWelder
     {
-        // Ключ 3D-ячейки грида
+        // Ключ 3D-ячейки; long для координат > 2^31 / tolerance
         private struct CellKey
         {
-            public int X;
-            public int Y;
-            public int Z;
+            public long X;
+            public long Y;
+            public long Z;
 
             public override bool Equals(object obj)
             {
@@ -156,10 +157,19 @@ namespace Cad2Gdml.Meshes
 
             public override int GetHashCode()
             {
-                int h = X;
-                h = (h * 397) ^ Y;
-                h = (h * 397) ^ Z;
-                return h;
+                long h = X;
+                h = (h * 397L) ^ Y;
+                h = (h * 397L) ^ Z;
+                return (int)(h ^ (h >> 32));
+            }
+        }
+
+        // Проверка: координата не должна быть NaN или Infinity
+        private static void EnsureFinite(double v)
+        {
+            if (double.IsNaN(v) || double.IsInfinity(v))
+            {
+                throw new InvalidDataException("Координата вершины содержит NaN или Infinity.");
             }
         }
 
@@ -182,9 +192,15 @@ namespace Cad2Gdml.Meshes
             for (int vi = 0; vi < src.Vertices.Count; vi++)
             {
                 Vec3d v = src.Vertices[vi];
-                int cx = (int)Math.Floor(v.X * invTol);
-                int cy = (int)Math.Floor(v.Y * invTol);
-                int cz = (int)Math.Floor(v.Z * invTol);
+
+                // Защита от некорректных координат
+                EnsureFinite(v.X);
+                EnsureFinite(v.Y);
+                EnsureFinite(v.Z);
+
+                long cx = (long)Math.Floor(v.X * invTol);
+                long cy = (long)Math.Floor(v.Y * invTol);
+                long cz = (long)Math.Floor(v.Z * invTol);
 
                 int mergedIdx = -1;
 
@@ -196,9 +212,9 @@ namespace Cad2Gdml.Meshes
                         for (int dz = -1; dz <= 1 && mergedIdx < 0; dz++)
                         {
                             CellKey key = new CellKey();
-                            key.X = cx + dx;
-                            key.Y = cy + dy;
-                            key.Z = cz + dz;
+                            key.X = cx + (long)dx;
+                            key.Y = cy + (long)dy;
+                            key.Z = cz + (long)dz;
 
                             List<int> bucket;
                             if (grid.TryGetValue(key, out bucket))

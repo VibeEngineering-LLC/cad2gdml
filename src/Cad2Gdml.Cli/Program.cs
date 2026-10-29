@@ -125,13 +125,12 @@ namespace Cad2Gdml.Cli
                 }
             }
 
-            // Проверка --front: +z/-z или +x/-x/+y/-y
+            // Проверка --front: допустимы только +z, -z, auto
             if (front != null)
             {
-                if (front != "+z" && front != "-z" && front != "+x" && front != "-x"
-                    && front != "+y" && front != "-y")
+                if (front != "+z" && front != "-z" && front != "auto")
                 {
-                    Console.Error.WriteLine("Недопустимый --front: " + front + " (ожидается +z, -z, +x, -x, +y, -y).");
+                    Console.Error.WriteLine("неизвестное значение --front: " + front + " (допустимо: +z, -z, auto)");
                     return 2;
                 }
             }
@@ -179,7 +178,7 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --name <база>              Базовое имя выходных файлов");
             Console.WriteLine("  --unit mm|cm|m|inch        Единицы входных файлов");
             Console.WriteLine("  --crystal <имя>            Имя детали-кристалла");
-            Console.WriteLine("  --front +z|-z|+x|-x|+y|-y Направление передней грани");
+            Console.WriteLine("  --front +z|-z|auto         Направление передней грани");
             Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
@@ -229,18 +228,18 @@ namespace Cad2Gdml.Cli
                 }
             }
 
-            // Финальная строка: MainErrorId или OK
-            string id;
+            // Финальная строка: код, ID ошибки, сообщение
+            Console.WriteLine();
             if (result.ExitCode == 0)
             {
-                id = "OK";
+                Console.WriteLine("cad2gdml: код 0 OK");
             }
             else
             {
-                id = (!string.IsNullOrEmpty(result.MainErrorId)) ? result.MainErrorId : "E_UNKNOWN";
+                string id = (!string.IsNullOrEmpty(result.MainErrorId)) ? result.MainErrorId : "E_UNKNOWN";
+                string msg = (!string.IsNullOrEmpty(result.MainErrorMessage)) ? result.MainErrorMessage : "";
+                Console.WriteLine("cad2gdml: код " + result.ExitCode.ToString(CultureInfo.InvariantCulture) + " " + id + " — " + msg);
             }
-            Console.WriteLine();
-            Console.WriteLine("cad2gdml: код " + result.ExitCode.ToString(CultureInfo.InvariantCulture) + " " + id);
         }
     }
 }

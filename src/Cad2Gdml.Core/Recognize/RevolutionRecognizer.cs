@@ -18,7 +18,7 @@ namespace Cad2Gdml.Recognize
     // Ось ∥ z, позиция = центр bbox по X,Y;
     // вершины → (r,z); уровни по z с шагом RevTolMm;
     // кольца: разрыв радиусов > 10*RevTolMm;
-    // проверки: n_min, прилежание к профилю, объём (Папп).
+    // проверки: n_min по кольцам, прилежание к профилю, объём (Папп).
     public static class RevolutionRecognizer
     {
         public static SolidShape TryRecognize(Part part, RecognizeOptions opt, out string whyNot)
@@ -31,7 +31,7 @@ namespace Cad2Gdml.Recognize
                 return null;
             }
 
-            double tol = opt.RevTolMm > 1e-9 ? opt.RevTolMm : 0.01; // защита от деления на ноль
+            double tol = opt.RevTolMm > 1e-9 ? opt.RevTolMm : 0.01;
 
             // Позиция оси: центр bounding box
             Vec3d bMin, bMax;
@@ -51,7 +51,7 @@ namespace Cad2Gdml.Recognize
                 zAll[i] = v.Z;
             }
 
-            // Группировка по z-уровням (округление к кратному tol)
+            // Группировка по z-уровням
             Dictionary<long, List<int>> groups = new Dictionary<long, List<int>>();
             for (int i = 0; i < nv; i++)
             {
@@ -73,28 +73,12 @@ namespace Cad2Gdml.Recognize
                 return null;
             }
 
-            // n_min — наименьшее число вершин на уровне
-            int nMin = int.MaxValue;
-            for (int li = 0; li < nLevels; li++)
-            {
-                int cnt = groups[sortedKeys[li]].Count;
-                if (cnt < nMin)
-                {
-                    nMin = cnt;
-                }
-            }
-
-            if (nMin < opt.RevMinSegments)
-            {
-                whyNot = "I_REV_COARSE";
-                return null;
-            }
-
-            // Радиусы колец и z каждого уровня
+            // Обход уровней: определение колец, подсчёт вершин на кольцо
             double[] lRIn = new double[nLevels];
             double[] lROut = new double[nLevels];
             double[] lZ = new double[nLevels];
             double gapTh = 10.0 * tol;
+            int nMin = int.MaxValue;
 
             for (int li = 0; li < nLevels; li++)
             {
@@ -108,7 +92,7 @@ namespace Cad2Gdml.Recognize
                 }
                 lZ[li] = zSum / verts.Count;
 
-                // Сортировка радиусов вершин уровня
+                // Сортировка радиусов
                 double[] lv = new double[verts.Count];
                 for (int j = 0; j < verts.Count; j++)
                 {
@@ -116,7 +100,7 @@ namespace Cad2Gdml.Recognize
                 }
                 Array.Sort(lv);
 
-                // Разделение на максимум два кластера по разрыву > gapTh
+                // Разделение на максимум два кластера
                 int splitAt = -1;
                 for (int j = 1; j < lv.Length; j++)
                 {
@@ -129,7 +113,7 @@ namespace Cad2Gdml.Recognize
 
                 if (splitAt > 0)
                 {
-                    // Проверяем: нет второго разрыва (не более двух колец)
+                    // Запрет третьего разрыва
                     for (int j = splitAt + 1; j < lv.Length; j++)
                     {
                         if (lv[j] - lv[j - 1] > gapTh)
@@ -147,12 +131,48 @@ namespace Cad2Gdml.Recognize
                     lROut[li] = lv[lv.Length - 1];
                 }
 
-                // Профиль должен быть корректным: rIn < rOut
+                // Профиль: rIn < rOut
                 if (lROut[li] - lRIn[li] < tol)
                 {
                     whyNot = "I_REV_DEGENERATE";
                     return null;
                 }
+
+                // Подсчёт вершин на каждом кольце (осевые r<=tol не считаем)
+                int cntInner = 0;
+                int cntOuter = 0;
+                if (splitAt > 0)
+                {
+                    for (int j = 0; j < splitAt; j++)
+                    {
+                        if (lv[j] > tol) cntInner++;
+                    }
+                    for (int j = splitAt; j < lv.Length; j++)
+                    {
+                        if (lv[j] > tol) cntOuter++;
+                    }
+                }
+                else
+                {
+                    for (int j = 0; j < lv.Length; j++)
+                    {
+                        if (lv[j] > tol) cntOuter++;
+                    }
+                }
+
+                // n_min — минимум по кольцам, осевые вершины исключены
+                if (lRIn[li] > tol)
+                {
+                    if (cntInner < nMin) nMin = cntInner;
+                }
+                if (cntOuter < nMin) nMin = cntOuter;
+            }
+
+            // Грубость: меньше RevMinSegments вершин на кольце — не тело вращения
+            if (nMin < opt.RevMinSegments)
+            {
+                whyNot = "I_REV_COARSE";
+                return null;
             }
 
             // Проверка (a): каждая вершина на своём кольце
@@ -173,7 +193,7 @@ namespace Cad2Gdml.Recognize
                 }
 
                 double r = rAll[i];
-                bool onRing = (r <= tol); // вершины на оси (центры веерных торцов)
+                bool onRing = (r <= tol);
                 if (lRIn[li] > 0.0)
                 {
                     if (Math.Abs(r - lRIn[li]) <= tol)
@@ -199,7 +219,7 @@ namespace Cad2Gdml.Recognize
             // Объём сетки
             double meshVol = Math.Abs(MeshProperties.SignedVolume(part.Mesh));
 
-            // Объём профиля по Паппу
+            // Объём профиля по Паппу (учитывает полость)
             double profVol = ComputeProfileVolume(lZ, lRIn, lROut, nLevels);
 
             if (profVol <= 1e-9)
@@ -208,7 +228,7 @@ namespace Cad2Gdml.Recognize
                 return null;
             }
 
-            // Проверка (b): V_сетки ≤ V_проф и относительное расхождение
+            // Проверка (b): V_сетки ≤ V_проф
             if (meshVol > profVol * (1.0 + 1e-6))
             {
                 whyNot = "I_REV_VOL_EXCEEDS";
@@ -247,11 +267,8 @@ namespace Cad2Gdml.Recognize
                 }
             }
 
-            // Несколько уровней → polycone (каждый интервал — фрустус)
+            // Несколько уровней → polycone
             shape.Kind = SolidKind.Polycone;
-            shape.ZPlane = new List<double>();
-            shape.RInner = new List<double>();
-            shape.ROuter = new List<double>();
             for (int li = 0; li < nLevels - 1; li++)
             {
                 shape.ZPlane.Add(lZ[li]);
@@ -264,10 +281,7 @@ namespace Cad2Gdml.Recognize
             return shape;
         }
 
-
-        // Объём тела вращения: V = π ∮ r² dz по контуру профиля
-        // Контур: наружная кромка (rOut) по возрастанию z,
-        //         внутренняя кромка (rIn) по убыванию z
+        // Объём тела вращения по Паппу: контур (r,z) наружная вверх → внутренняя вниз
         private static double ComputeProfileVolume(
             double[] z, double[] rIn, double[] rOut, int n)
         {
@@ -286,7 +300,6 @@ namespace Cad2Gdml.Recognize
                 pz[n + i] = z[n - 1 - i];
             }
 
-            // По Паппу: V = π Σ (Δz_i)·(r_i² + r_i·r_j + r_j²)/3
             double sum = 0.0;
             for (int i = 0; i < pc; i++)
             {

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -35,6 +37,7 @@ namespace Cad2Gdml.Pipeline
     {
         public int ExitCode;
         public string MainErrorId;
+        public string MainErrorMessage;
         public SceneModel Scene;
         public string GdmlPath;
         public string PngPath;
@@ -94,14 +97,12 @@ namespace Cad2Gdml.Pipeline
                 // 7. Запись выходных
                 try
                 {
-                    WriteOutputs(o, scene, result);
+                    if (!WriteOutputs(o, scene, result))
+                        return Fail(result);
                 }
-                catch (Exception lex) when (lex is FileNotFoundException || lex is DirectoryNotFoundException
-                    || lex is InvalidDataException || lex is FormatException || lex is IOException
-                    || lex is OverflowException || lex is IndexOutOfRangeException
-                    || lex is ArgumentOutOfRangeException)
+                catch (Exception lex)
                 {
-                    scene.Add(MapExceptionCode(lex), DiagSeverity.Error, "", lex.Message);
+                    scene.Add("E_FORMAT", DiagSeverity.Error, "", "Не удалось записать результат: " + lex.Message);
                     return Fail(result);
                 }
 
@@ -239,7 +240,7 @@ namespace Cad2Gdml.Pipeline
                 if (topo.NonManifoldEdges > 0)
                 {
                     scene.Add("E_MESH_NONMANIFOLD", DiagSeverity.Error, p.Name,
-                        "Неманifold рёбра: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture));
+                        "Неманиifold рёбра: " + topo.NonManifoldEdges.ToString(CultureInfo.InvariantCulture));
                     return false;
                 }
 
@@ -255,7 +256,7 @@ namespace Cad2Gdml.Pipeline
                     p.MeshOpen = true;
                 }
 
-                // Пустая деталь: < 4 треугольников или |V| < 1e-6
+                // Пустая деталь
                 if (p.Mesh.TriangleCount < 4)
                 {
                     scene.Add("E_MESH_EMPTY", DiagSeverity.Error, p.Name,
@@ -285,15 +286,13 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-
         // Назначение ролей и обработка открытых сеток
         private static bool AssignRoles(PipelineOptions o, SceneModel scene)
         {
             var roleOpt = new RoleOptions();
             RoleAssigner.Assign(scene, roleOpt, o.CrystalName);
 
-            // Открытые сетки: по умолчанию — ошибка для любой детали;
-            // при DropOpen — неключевые отбрасываются с предупреждением
+            // Открытые сетки
             for (int oi = scene.Parts.Count - 1; oi >= 0; oi--)
             {
                 Part op = scene.Parts[oi];
@@ -367,6 +366,23 @@ namespace Cad2Gdml.Pipeline
             }
 
             FrameBuilder.Apply(scene, t);
+
+            // Проверка: источник/контейнер позади переднего торца
+            for (int i = 0; i < scene.Parts.Count; i++)
+            {
+                Part p = scene.Parts[i];
+                if (p.Role != PartRole.Source && p.Role != PartRole.Container) continue;
+                if (p.Mesh == null) continue;
+                Vec3d mn, mx;
+                p.Mesh.GetBounds(out mn, out mx);
+                double cz = (mn.Z + mx.Z) * 0.5;
+                if (cz < 0.0)
+                {
+                    scene.Add("W_SOURCE_BEHIND", DiagSeverity.Warning, p.Name,
+                        "Источник расположен позади переднего торца кристалла: проверьте --front");
+                }
+            }
+
             return true;
         }
 
@@ -405,13 +421,40 @@ namespace Cad2Gdml.Pipeline
         private static bool ResolveMaterials(PipelineOptions o, SceneModel scene)
         {
             MaterialLibrary lib;
-            if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
+            try
             {
-                lib = MaterialLibrary.LoadJson(o.MaterialsJsonPath);
+                if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
+                {
+                    lib = MaterialLibrary.LoadJson(o.MaterialsJsonPath);
+                }
+                else
+                {
+                    lib = MaterialLibrary.Default();
+                }
             }
-            else
+            catch (InvalidDataException ex)
             {
-                lib = MaterialLibrary.Default();
+                // Извлекаем код из сообщения вида "E_MAT_UNKNOWN: ..."
+                string msg = ex.Message;
+                string code;
+                if (msg != null && msg.StartsWith("E_"))
+                {
+                    int sep = msg.IndexOfAny(new char[] { ':', ' ' });
+                    code = (sep > 0) ? msg.Substring(0, sep) : msg;
+                }
+                else
+                {
+                    code = "E_FORMAT";
+                }
+                scene.Add(code, DiagSeverity.Error, "", msg);
+                return false;
+            }
+            catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException
+                || ex is UnauthorizedAccessException || ex is IOException || ex is FormatException)
+            {
+                scene.Add("E_FORMAT", DiagSeverity.Error, "",
+                    "Не удалось загрузить файл веществ: " + ex.Message);
+                return false;
             }
 
             for (int i = 0; i < scene.Parts.Count; i++)
@@ -427,7 +470,6 @@ namespace Cad2Gdml.Pipeline
                 if (mat != null)
                 {
                     p.Material = mat;
-                    // Предположительное назначение кристалла
                     if (p.Role == PartRole.Crystal && lib.LastResolveWasGuess)
                     {
                         scene.Add("W_MAT_GUESS", DiagSeverity.Warning, p.Name,
@@ -436,7 +478,7 @@ namespace Cad2Gdml.Pipeline
                     continue;
                 }
 
-                if (o.AllowDefaultMaterial)
+                if (o.AllowDefaultMaterial || lib.DefaultFromFile)
                 {
                     p.Material = lib.DefaultMaterial;
                     scene.Add("W_MAT_DEFAULT", DiagSeverity.Warning, p.Name,
@@ -452,42 +494,105 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Запись GDML, PNG, отчёта
-        private static void WriteOutputs(PipelineOptions o, SceneModel scene, PipelineResult result)
+        // Запись GDML, PNG, отчёта — атомарно через временные файлы
+        private static bool WriteOutputs(PipelineOptions o, SceneModel scene, PipelineResult result)
         {
             string outDir = (o.OutDir != null && o.OutDir.Length > 0) ? o.OutDir : ".";
             Directory.CreateDirectory(outDir);
 
             string baseName = o.BaseName;
             if (baseName == null || baseName.Length == 0)
-            {
                 baseName = DeriveBaseName(o);
-            }
 
             string gdmlPath = Path.Combine(outDir, baseName + ".gdml");
             string pngPath = Path.Combine(outDir, baseName + ".png");
             string reportPath = Path.Combine(outDir, baseName + ".report.txt");
 
-            // GDML
+            // Имена временных файлов
+            string gdmlTmp = gdmlPath + ".tmp";
+            string pngTmp = pngPath + ".tmp";
+            string reportTmp = reportPath + ".tmp";
+
+            // Библиотека веществ
             MaterialLibrary lib;
             if (!string.IsNullOrEmpty(o.MaterialsJsonPath))
                 lib = MaterialLibrary.LoadJson(o.MaterialsJsonPath);
             else
                 lib = MaterialLibrary.Default();
 
-            result.Gdml = GdmlWriter.Write(scene, lib, gdmlPath);
-            result.GdmlPath = gdmlPath;
-
-            // PNG — сечение 1200×800
+            // Рендер в памяти: PNG-битмап и текст отчёта
             var sketch = SketchBuilder.Build(scene);
-            GdiSketchRenderer.SavePng(sketch, pngPath, 1200, 800);
-            result.PngPath = pngPath;
+            Bitmap pngBitmap = GdiSketchRenderer.Render(sketch, 1200, 800);
 
-            // Текстовый отчёт
             string srcDesc = string.Join("; ", GetInputNames(scene));
             string report = SceneDescriber.Describe(scene, srcDesc, gdmlPath);
-            File.WriteAllText(reportPath, report, new UTF8Encoding(false));
+
+            // Запись во временные файлы
+            GdmlWriteResult gdmlResult;
+            try
+            {
+                gdmlResult = GdmlWriter.Write(scene, lib, gdmlTmp);
+                pngBitmap.Save(pngTmp, ImageFormat.Png);
+                File.WriteAllText(reportTmp, report, new UTF8Encoding(false));
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
+                || ex is FileNotFoundException || ex is DirectoryNotFoundException
+                || ex is InvalidDataException || ex is FormatException || ex is ArgumentException
+                || ex is NotSupportedException)
+            {
+                CleanupTemp(gdmlTmp, pngTmp, reportTmp);
+                string msg = "Не удалось записать результат: " + ex.Message;
+                scene.Add("E_FORMAT", DiagSeverity.Error, "", msg);
+                return false;
+            }
+            finally
+            {
+                if (pngBitmap != null) pngBitmap.Dispose();
+            }
+
+            // Перенос временных → финальных
+            try
+            {
+                if (File.Exists(gdmlPath)) File.Delete(gdmlPath);
+                if (File.Exists(pngPath)) File.Delete(pngPath);
+                if (File.Exists(reportPath)) File.Delete(reportPath);
+
+                File.Move(gdmlTmp, gdmlPath);
+                File.Move(pngTmp, pngPath);
+                File.Move(reportTmp, reportPath);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
+                || ex is FileNotFoundException || ex is DirectoryNotFoundException
+                || ex is ArgumentException)
+            {
+                CleanupTemp(gdmlTmp, pngTmp, reportTmp);
+                string msg = "Не удалось записать результат: " + ex.Message;
+                scene.Add("E_FORMAT", DiagSeverity.Error, "", msg);
+                return false;
+            }
+
+            result.Gdml = gdmlResult;
+            result.GdmlPath = gdmlPath;
+            result.PngPath = pngPath;
             result.ReportPath = reportPath;
+            return true;
+        }
+
+        // Удаление временных файлов (игнор ошибок)
+        private static void CleanupTemp(string a, string b, string c)
+        {
+            string[] files = new[] { a, b, c };
+            for (int i = 0; i < files.Length; i++)
+            {
+                try
+                {
+                    if (File.Exists(files[i])) File.Delete(files[i]);
+                }
+                catch
+                {
+                    // игнор
+                }
+            }
         }
 
         // Базовое имя из первого входа
@@ -531,19 +636,22 @@ namespace Cad2Gdml.Pipeline
             return (ext != null) ? ext.ToLowerInvariant() : "";
         }
 
-        // Выход: код из первой Error-диагностики по таблице префиксов
+        // Выход: код из первой Error-диагностики
         private static PipelineResult Fail(PipelineResult result)
         {
             string firstError = null;
+            string firstErrorMsg = null;
             for (int i = 0; i < result.Diagnostics.Count; i++)
             {
                 if (result.Diagnostics[i].Severity == DiagSeverity.Error)
                 {
                     firstError = result.Diagnostics[i].Code;
+                    firstErrorMsg = result.Diagnostics[i].Message;
                     break;
                 }
             }
             result.MainErrorId = firstError;
+            result.MainErrorMessage = firstErrorMsg;
             result.ExitCode = DeriveExitCode(firstError);
             return result;
         }

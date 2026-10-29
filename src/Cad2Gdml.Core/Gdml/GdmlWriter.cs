@@ -202,10 +202,10 @@ namespace Cad2Gdml.Gdml
         private static void Add(Dictionary<string, int> d, string k, int v) { d[k] = v; }
         private static void AddA(Dictionary<string, double> d, string k, double v) { d[k] = v; }
 
-        // Числовой формат: 6 знаков, InvariantCulture, без экспоненты, без хвостовых нулей, -0 -> 0
+        // Числовой формат
         private static string Fmt(double v)
         {
-            v = Math.Round(v, 6);
+            v = Math.Round(v, 4);
             if (v == 0.0) return "0";
             return v.ToString("0.######", CultureInfo.InvariantCulture);
         }
@@ -242,7 +242,7 @@ namespace Cad2Gdml.Gdml
             string[] solidNames = new string[partCount];
             string[] matNames = new string[partCount];
 
-            // Названия и проверка веществ
+            // Названия и разрешение веществ
             for (int pi = 0; pi < partCount; pi++)
             {
                 Part p = scene.Parts[pi];
@@ -252,17 +252,27 @@ namespace Cad2Gdml.Gdml
                 solidNames[pi] = volNames[pi] + "_s";
                 names.Add(solidNames[pi]);
 
-                // Вещество
                 string mat = p.Material;
                 if (string.IsNullOrEmpty(mat)) mat = lib.DefaultMaterial;
                 if (string.IsNullOrEmpty(mat))
                     throw new InvalidDataException("E_MAT_UNKNOWN: " + baseName);
 
+                // G4_* — NIST-ссылка, допустимо без определения в библиотеке
+                if (mat.StartsWith("G4_", StringComparison.Ordinal))
+                {
+                    MaterialDef nistDef = lib.Find(mat);
+                    if (nistDef == null)
+                    {
+                        matNames[pi] = mat;
+                        continue;
+                    }
+                    matNames[pi] = nistDef.Name;
+                    continue;
+                }
+
                 MaterialDef def = lib.Find(mat);
                 if (def == null)
                     throw new InvalidDataException("E_MAT_UNKNOWN: " + mat);
-
-                // Используем каноническое имя из библиотеки
                 matNames[pi] = def.Name;
             }
 
@@ -298,7 +308,7 @@ namespace Cad2Gdml.Gdml
             double worldBoxY = 2.0 * wHy;
             double worldBoxZ = 2.0 * wHz;
 
-            // Подсчёт видов и проверка пустых tessellated
+            // Подсчёт видов
             int tessCount = 0, triCount = 0, tubeCount = 0, polyCount = 0, boxCount = 0;
             for (int pi = 0; pi < partCount; pi++)
             {
@@ -344,7 +354,6 @@ namespace Cad2Gdml.Gdml
                 if (!isTess) continue;
                 if (p.Mesh == null) continue;
 
-                // Собираем индексы используемых вершин
                 var usedVerts = new HashSet<int>();
                 for (int ii = 0; ii < p.Mesh.Indices.Count; ii++)
                     usedVerts.Add(p.Mesh.Indices[ii]);
@@ -365,16 +374,55 @@ namespace Cad2Gdml.Gdml
             // --- <materials> ---
             xml.AppendLine("  <materials>");
 
-            // Элементы из custom-веществ
-            var neededElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Множество non-NIST материалов, подлежащих записи (включая транзитивные зависимости)
+            var matsToWrite = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string matName in matNames)
             {
-                MaterialDef def = lib.Find(matName);
-                if (def == null || def.IsNist) continue;
-                if (def.MassFractions != null)
+                MaterialDef d = lib.Find(matName);
+                if (d == null) continue;
+                if (d.IsNist) continue;
+                matsToWrite.Add(d.Name);
+            }
+
+            // Транзитивное расширение: fraction-ссылки на другие non-NIST материалы
+            bool expanded = true;
+            while (expanded)
+            {
+                expanded = false;
+                var toAdd = new List<string>();
+                foreach (string matName in matsToWrite)
                 {
+                    MaterialDef def = lib.Find(matName);
+                    if (def == null || def.MassFractions == null) continue;
                     for (int fi = 0; fi < def.MassFractions.Count; fi++)
-                        neededElements.Add(def.MassFractions[fi].Key);
+                    {
+                        string key = def.MassFractions[fi].Key;
+                        if (key.StartsWith("G4_", StringComparison.Ordinal)) continue;
+                        MaterialDef refDef = lib.Find(key);
+                        if (refDef != null && !refDef.IsNist && !matsToWrite.Contains(refDef.Name))
+                        {
+                            toAdd.Add(refDef.Name);
+                            expanded = true;
+                        }
+                    }
+                }
+                foreach (string s in toAdd) matsToWrite.Add(s);
+            }
+
+            // Элементы: только plain-символы (не G4_*, не имена материалов)
+            var neededElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string matName in matsToWrite)
+            {
+                MaterialDef def = lib.Find(matName);
+                if (def == null || def.MassFractions == null) continue;
+                for (int fi = 0; fi < def.MassFractions.Count; fi++)
+                {
+                    string key = def.MassFractions[fi].Key;
+                    if (key.StartsWith("G4_", StringComparison.Ordinal)) continue;
+                    // Если это имя материала в библиотеке — не элемент
+                    MaterialDef refDef = lib.Find(key);
+                    if (refDef != null) continue;
+                    neededElements.Add(key);
                 }
             }
 
@@ -393,15 +441,13 @@ namespace Cad2Gdml.Gdml
                 xml.AppendLine();
             }
 
-            // Вещества (только non-NIST)
-            var writtenMats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string matName in SortStrings(new HashSet<string>(matNames, StringComparer.OrdinalIgnoreCase)))
+            // Топологическая сортировка материалов (зависимые — после зависимых)
+            List<string> matOrder = TopoSortMaterials(matsToWrite, lib);
+
+            foreach (string matName in matOrder)
             {
                 MaterialDef def = lib.Find(matName);
                 if (def == null) continue;
-                if (def.IsNist) continue;
-                if (writtenMats.Contains(def.Name)) continue;
-                writtenMats.Add(def.Name);
 
                 xml.Append("    <material name=\"").Append(XmlEsc(def.Name)).Append("\" state=\"solid\">");
                 xml.AppendLine();
@@ -425,7 +471,6 @@ namespace Cad2Gdml.Gdml
             // --- <solids> ---
             xml.AppendLine("  <solids>");
 
-            // World box
             xml.Append("    <box name=\"").Append(XmlEsc(worldSolidName))
                .Append("\" x=\"").Append(Fmt(worldBoxX))
                .Append("\" y=\"").Append(Fmt(worldBoxY))
@@ -517,7 +562,6 @@ namespace Cad2Gdml.Gdml
                 xml.AppendLine("    </volume>");
             }
 
-            // World volume с physvol
             xml.Append("    <volume name=\"").Append(XmlEsc(worldVolName)).Append("\">");
             xml.AppendLine();
             xml.Append("      <materialref ref=\"G4_AIR\"/>");
@@ -536,7 +580,6 @@ namespace Cad2Gdml.Gdml
                 xml.Append("        <volumeref ref=\"").Append(XmlEsc(volNames[pi])).Append("\"/>");
                 xml.AppendLine();
 
-                // Позиция по типу
                 double px = 0.0, py = 0.0, pz = 0.0;
                 if (p.Shape != null)
                 {
@@ -599,6 +642,51 @@ namespace Cad2Gdml.Gdml
             return result;
         }
 
+        // Топологическая сортировка: зависимые материалы — после зависимых
+        private static List<string> TopoSortMaterials(HashSet<string> mats, MaterialLibrary lib)
+        {
+            var order = new List<string>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var inStack = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var sorted = new List<string>(mats);
+            sorted.Sort(StringComparer.Ordinal);
+
+            for (int i = 0; i < sorted.Count; i++)
+                VisitMat(sorted[i], mats, lib, visited, inStack, order);
+
+            return order;
+        }
+
+        // Рекурсивный обход для топосортировки
+        private static void VisitMat(string name, HashSet<string> mats, MaterialLibrary lib,
+            HashSet<string> visited, HashSet<string> inStack, List<string> order)
+        {
+            if (inStack.Contains(name))
+                throw new InvalidDataException("E_MAT_CYCLE: " + name);
+            if (visited.Contains(name)) return;
+            inStack.Add(name);
+
+            MaterialDef def = lib.Find(name);
+            if (def != null && def.MassFractions != null)
+            {
+                for (int fi = 0; fi < def.MassFractions.Count; fi++)
+                {
+                    string key = def.MassFractions[fi].Key;
+                    if (key.StartsWith("G4_", StringComparison.Ordinal)) continue;
+                    MaterialDef refDef = lib.Find(key);
+                    if (refDef != null && !refDef.IsNist && mats.Contains(refDef.Name))
+                    {
+                        VisitMat(refDef.Name, mats, lib, visited, inStack, order);
+                    }
+                }
+            }
+
+            inStack.Remove(name);
+            visited.Add(name);
+            order.Add(name);
+        }
+
         // Запись tessellated-твёрдого
         private static void WriteTessellated(StringBuilder xml, string sname, Part p, int pi)
         {
@@ -631,7 +719,7 @@ namespace Cad2Gdml.Gdml
             xml.AppendLine("    </tessellated>");
         }
 
-        // Полуребро World: max(|lo|,|hi|) + max(10, 10%)
+        // Полуребро World
         private static double HalfExtent(double lo, double hi)
         {
             double m = Math.Max(Math.Abs(lo), Math.Abs(hi));
