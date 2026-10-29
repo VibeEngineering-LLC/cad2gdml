@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Cad2Gdml.Meshes;
 
 namespace Cad2Gdml.Scene
 {
@@ -102,66 +103,65 @@ namespace Cad2Gdml.Scene
                     p.Role = PartRole.Housing;
             }
 
-            // Куски одной разбитой детали (<имя>_cNN): кристаллом остаётся крупнейший
+            // Куски одной разбитой детали: кристаллом остаётся крупнейший по объёму
             if (!hasOverride)
             {
                 var groups = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.List<Part>>();
                 foreach (var p in scene.Parts)
                 {
                     if (p.Role != PartRole.Crystal) continue;
-                    Match m = Regex.Match(p.Name, "^(.+)_c(\\d+)$");
-                    if (!m.Success) continue;
-                    string prefix = m.Groups[1].Value;
+                    if (string.IsNullOrEmpty(p.SplitGroup)) continue;
+                    string key = p.SplitGroup;
                     System.Collections.Generic.List<Part> bucket;
-                    if (!groups.TryGetValue(prefix, out bucket))
+                    if (!groups.TryGetValue(key, out bucket))
                     {
                         bucket = new System.Collections.Generic.List<Part>();
-                        groups[prefix] = bucket;
+                        groups[key] = bucket;
                     }
                     bucket.Add(p);
                 }
 
-                // Детерминированный порядок — ordinal по префиксу
-                var prefixes = new System.Collections.Generic.List<string>(groups.Keys);
-                prefixes.Sort(StringComparer.Ordinal);
+                // Детерминированный порядок — ordinal по ключу
+                var keys = new System.Collections.Generic.List<string>(groups.Keys);
+                keys.Sort(StringComparer.Ordinal);
 
-                foreach (string prefix in prefixes)
+                foreach (string key in keys)
                 {
-                    System.Collections.Generic.List<Part> bucket = groups[prefix];
+                    System.Collections.Generic.List<Part> bucket = groups[key];
                     if (bucket.Count < 2) continue;
 
-                    // Сумма треугольников и лучший (наим. имя при равенстве)
-                    int total = 0;
+                    // Сумма объёмов и лучший (наим. имя при равенстве)
+                    double totalVol = 0.0;
                     Part best = null;
-                    int bestTc = 0;
+                    double bestVol = 0.0;
                     foreach (var p in bucket)
                     {
-                        int tc = (p.Mesh != null) ? p.Mesh.TriangleCount : 0;
-                        total += tc;
-                        if (best == null || tc > bestTc || (tc == bestTc && string.CompareOrdinal(p.Name, best.Name) < 0))
+                        double vol = (p.Mesh != null) ? Math.Abs(MeshProperties.SignedVolume(p.Mesh)) : 0.0;
+                        totalVol += vol;
+                        if (best == null || vol > bestVol || (vol == bestVol && string.CompareOrdinal(p.Name, best.Name) < 0))
                         {
                             best = p;
-                            bestTc = tc;
+                            bestVol = vol;
                         }
                     }
 
-                    // 80 % порог: bestTc * 5 >= total * 4
-                    if (bestTc * 5 >= total * 4)
+                    // 80 % порог: bestVol * 5 >= totalVol * 4
+                    if (bestVol * 5.0 >= totalVol * 4.0)
                     {
                         foreach (var p in bucket)
                         {
                             if (p != best)
                                 p.Role = PartRole.Other;
                         }
-                        scene.Add("W_ROLE_GUESS", DiagSeverity.Warning, prefix,
+                        scene.Add("W_ROLE_GUESS", DiagSeverity.Warning, key,
                             "файл разбит на несколько тел: роль кристалла оставлена у крупнейшего (" + best.Name + "); если это не он — укажите имя в поле «Кристалл»");
                     }
                     else
                     {
                         foreach (var p in bucket)
                             p.Role = PartRole.Other;
-                        scene.Add("W_ROLE_GUESS", DiagSeverity.Warning, prefix,
-                            "файл разбит на несколько тел, кристалл не определён: укажите имя тела в поле «Кристалл» (например " + prefix + "_c01)");
+                        scene.Add("W_ROLE_GUESS", DiagSeverity.Warning, key,
+                            "файл разбит на несколько тел, кристалл не определён: укажите имя тела в поле «Кристалл» (например " + key + "_c01)");
                     }
                 }
             }

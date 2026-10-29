@@ -43,6 +43,8 @@ namespace Cad2Gdml.Cli
             bool dropOpen = false;
             bool keepOpen = false;
             bool noSplit = false;
+            double weldTol = 0.0;
+            var matOverrides = new List<KeyValuePair<string, string>>();
 
             int idx = 0;
             while (idx < args.Length)
@@ -78,6 +80,42 @@ namespace Cad2Gdml.Cli
                 {
                     if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --materials."); return 2; }
                     materials = args[++idx];
+                }
+                else if (a == "--weld")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --weld."); return 2; }
+                    string wval = args[++idx];
+                    double parsed;
+                    if (!double.TryParse(wval, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed))
+                    {
+                        Console.Error.WriteLine("Недопустимое значение --weld: " + wval);
+                        return 2;
+                    }
+                    if (parsed <= 0.0 || parsed > 1.0)
+                    {
+                        Console.Error.WriteLine("Значение --weld должно быть > 0 и <= 1: " + parsed.ToString(CultureInfo.InvariantCulture));
+                        return 2;
+                    }
+                    weldTol = parsed;
+                }
+                else if (a == "--material")
+                {
+                    if (idx + 1 >= args.Length) { Console.Error.WriteLine("Ожидается значение для --material."); return 2; }
+                    string mval = args[++idx];
+                    int sep = mval.LastIndexOf('=');
+                    if (sep <= 0 || sep >= mval.Length - 1)
+                    {
+                        Console.Error.WriteLine("Формат --material: <имя>=<вещество>. Получено: " + mval);
+                        return 2;
+                    }
+                    string partName = mval.Substring(0, sep).Trim();
+                    string matName = mval.Substring(sep + 1).Trim();
+                    if (partName.Length == 0 || matName.Length == 0)
+                    {
+                        Console.Error.WriteLine("Обе части --material после trim должны быть непустыми: " + mval);
+                        return 2;
+                    }
+                    matOverrides.Add(new KeyValuePair<string, string>(partName, matName));
                 }
                 else if (a == "--allow-default-material")
                 {
@@ -164,7 +202,9 @@ namespace Cad2Gdml.Cli
                 AllowDefaultMaterial = allowDefault,
                 DropOpen = dropOpen,
                 KeepOpen = keepOpen,
-                NoSplit = noSplit
+                NoSplit = noSplit,
+                WeldTolMm = weldTol,
+                MaterialOverrides = matOverrides
             };
 
             // Запуск конвейера
@@ -197,6 +237,8 @@ namespace Cad2Gdml.Cli
             Console.WriteLine("  --crystal <имя>            Имя детали-кристалла");
             Console.WriteLine("  --front +z|-z|auto         Направление передней грани");
             Console.WriteLine("  --materials <файл.json>    Файл библиотеки веществ");
+            Console.WriteLine("  --weld <мм>                Допуск сшивки вершин (по умолчанию 1e-5)");
+            Console.WriteLine("  --material <имя>=<вещество>  Назначить вещество деталям, в имени которых есть <имя> (повторяемый)");
             Console.WriteLine("  --allow-default-material   Разрешить вещество по умолчанию");
             Console.WriteLine("  --drop-open                Отбрасывать открытые сетки (неключевые)");
             Console.WriteLine("  --keep-open                Оставлять открытые сетки с предупреждением");

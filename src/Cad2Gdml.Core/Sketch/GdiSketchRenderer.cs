@@ -119,22 +119,76 @@ namespace Cad2Gdml.Sketch
             }
         }
 
-        // Подписи деталей (9 pt, по центру)
+        // Подписи деталей (9 pt, по центру) с анти-наложением
         private static void DrawLabels(Graphics g, SketchModel m, float sc, float ox, float oy)
         {
             using (Font f = new Font("Segoe UI", 9f))
             using (SolidBrush br = new SolidBrush(Color.FromArgb(60, 60, 60)))
             using (StringFormat sf = new StringFormat { Alignment = StringAlignment.Center })
+            using (Pen leaderPen = new Pen(Color.FromArgb(60, 60, 60), 1f))
             {
+                List<RectangleF> drawn = new List<RectangleF>();
+
                 foreach (SketchRegion r in m.Regions)
                 {
                     if (r.Points == null || r.Points.Count < 2) continue;
+                    if (string.IsNullOrEmpty(r.Label)) continue;
+
                     float cx = 0, cz = 0;
                     foreach (Vec3d p in r.Points) { cx += (float)p.X; cz += (float)p.Z; }
                     cx /= r.Points.Count; cz /= r.Points.Count;
-                    g.DrawString(r.Label, f, br, TS(cx, cz, sc, ox, oy), sf);
+
+                    PointF anchor = TS(cx, cz, sc, ox, oy);
+
+                    // Измеряем текст
+                    SizeF sz = g.MeasureString(r.Label, f);
+                    float w = sz.Width;
+                    float h = sz.Height;
+
+                    // Прямоугольник по центру (StringFormat центрирует)
+                    RectangleF rect = new RectangleF(anchor.X - w / 2f, anchor.Y - h / 2f, w, h);
+
+                    // Проверяем пересечение с уже нарисованными (с увеличением 1 px)
+                    if (!IntersectsAny(drawn, rect))
+                    {
+                        g.DrawString(r.Label, f, br, anchor, sf);
+                        drawn.Add(rect);
+                    }
+                    else
+                    {
+                        // Пробы вертикального сдвига
+                        float[] offsets = new float[] { h, -h, 2f * h, -2f * h, 3f * h, -3f * h };
+                        bool placed = false;
+                        for (int i = 0; i < offsets.Length; i++)
+                        {
+                            PointF shifted = new PointF(anchor.X, anchor.Y + offsets[i]);
+                            RectangleF tryRect = new RectangleF(shifted.X - w / 2f, shifted.Y - h / 2f, w, h);
+                            if (!IntersectsAny(drawn, tryRect))
+                            {
+                                // Линия-указатель от якоря к смещённому центру
+                                g.DrawLine(leaderPen, anchor.X, anchor.Y, shifted.X, shifted.Y);
+                                g.DrawString(r.Label, f, br, shifted, sf);
+                                drawn.Add(tryRect);
+                                placed = true;
+                                break;
+                            }
+                        }
+                        // Если ни одно место не подошло — пропускаем
+                    }
                 }
             }
+        }
+
+        // Пересечение прямоугольника (увеличенного на 1 px) с набором
+        private static bool IntersectsAny(List<RectangleF> rects, RectangleF r)
+        {
+            RectangleF inflated = RectangleF.Inflate(r, 1f, 1f);
+            for (int i = 0; i < rects.Count; i++)
+            {
+                if (inflated.IntersectsWith(rects[i]))
+                    return true;
+            }
+            return false;
         }
 
         // Кепшион слева-сверху (10 pt bold)

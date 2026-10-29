@@ -30,8 +30,10 @@ namespace Cad2Gdml.Pipeline
         public string MaterialsJsonPath;
         public bool AllowDefaultMaterial;
         public bool DropOpen;
-        public bool KeepOpen; // оставлять открытые сетки с предупреждением (для просмотра; Geant4 может не загрузить)
+        public bool KeepOpen;
         public bool NoSplit;
+        public double WeldTolMm;
+        public List<KeyValuePair<string, string>> MaterialOverrides;
     }
 
     // Результат конвейера
@@ -60,7 +62,6 @@ namespace Cad2Gdml.Pipeline
 
             try
             {
-                // 1. Загрузка входов
                 bool loaded;
                 try
                 {
@@ -77,34 +78,26 @@ namespace Cad2Gdml.Pipeline
                 if (!loaded)
                     return Fail(result);
 
-                // 2. Сшивка, разбиение, топология
                 if (!ProcessMeshes(o, scene))
                     return Fail(result);
 
-                // 3. Роли и открытые сетки
                 if (!AssignRoles(o, scene))
                     return Fail(result);
 
-                // 4. Кадр координат (только если есть кристалл)
                 Part crystal = FindCrystal(scene);
                 if (crystal != null)
                 {
                     if (!BuildFrame(o, scene, crystal))
                         return Fail(result);
                 }
-                // иначе: детали остаются в координатах файла
 
-                // 5. Распознавание тел
                 RecognizeShapes(scene);
 
-                // 6. Вещества
                 if (!ResolveMaterials(o, scene))
                     return Fail(result);
 
-                // 7. Сортировка по имени (детерминированный порядок)
                 SortParts(scene);
 
-                // 8. Запись выходных
                 try
                 {
                     if (!WriteOutputs(o, scene, result))
@@ -127,7 +120,6 @@ namespace Cad2Gdml.Pipeline
             }
         }
 
-        // Код из исключения; InvalidDataException с "E_" → сам код
         private static string MapExceptionCode(Exception ex)
         {
             if (ex is InvalidDataException)
@@ -142,7 +134,6 @@ namespace Cad2Gdml.Pipeline
             return "E_FORMAT";
         }
 
-        // Извлечение кода E_MAT_/E_ELEMENT_ из InvalidDataException
         private static string ExtractMatCode(Exception ex)
         {
             if (ex is InvalidDataException)
@@ -157,7 +148,6 @@ namespace Cad2Gdml.Pipeline
             return "E_FORMAT";
         }
 
-        // Загрузка файлов по расширению
         private static bool LoadInputs(PipelineOptions o, SceneModel scene)
         {
             if (o.Inputs == null || o.Inputs.Count == 0)
@@ -230,7 +220,6 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Добавление списка деталей в сцену
         private static void AddParts(SceneModel scene, IList<Part> parts, string src)
         {
             foreach (Part p in parts)
@@ -240,12 +229,10 @@ namespace Cad2Gdml.Pipeline
             }
         }
 
-        // Сшивка, разбиение на связные компоненты, топология, объём
         private static bool ProcessMeshes(PipelineOptions o, SceneModel scene)
         {
-            const double weldTol = 1e-5;
+            double weldTol = o.WeldTolMm > 0.0 ? o.WeldTolMm : 1e-5;
 
-            // Фаза 1: проверка NaN + сварка
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -263,13 +250,11 @@ namespace Cad2Gdml.Pipeline
                 p.Mesh = MeshWelder.Weld(p.Mesh, weldTol);
             }
 
-            // Фаза 2: разбиение на связные компоненты
             if (!o.NoSplit)
             {
                 SplitConnectedComponents(scene);
             }
 
-            // Фаза 3: топология и объём для каждой (возможно разбитой) детали
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -329,7 +314,6 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Разбиение деталей с несколькими связными компонентами
         private static void SplitConnectedComponents(SceneModel scene)
         {
             for (int pi = scene.Parts.Count - 1; pi >= 0; pi--)
@@ -339,18 +323,16 @@ namespace Cad2Gdml.Pipeline
 
                 if (p.Mesh.Vertices.Count == 0) continue;
 
-                // Компоненты по манифольдным рёбрам: тела, касающиеся ребром или точкой, не склеиваются
                 List<List<int>> found = ComponentSplitter.Components(p.Mesh);
                 if (found.Count <= 1) continue;
                 var compMap = new Dictionary<int, List<int>>();
                 for (int ci0 = 0; ci0 < found.Count; ci0++) compMap[ci0] = found[ci0];
 
-                // Сортировка: убывание числа треугольников, при равенстве — меньший мин. индекс вершины
                 var comps = new List<KeyValuePair<int, List<int>>>(compMap.Count);
                 foreach (KeyValuePair<int, List<int>> kvp in compMap)
                     comps.Add(kvp);
 
-                comps.Sort(delegate(KeyValuePair<int, List<int>> a, KeyValuePair<int, List<int>> b)
+                comps.Sort(delegate (KeyValuePair<int, List<int>> a, KeyValuePair<int, List<int>> b)
                 {
                     int cmp = b.Value.Count.CompareTo(a.Value.Count);
                     if (cmp != 0) return cmp;
@@ -373,21 +355,18 @@ namespace Cad2Gdml.Pipeline
                 scene.Add("I_SPLIT", DiagSeverity.Info, p.Name,
                     "деталь " + p.Name + " разбита на " + nComp.ToString(CultureInfo.InvariantCulture) + " связных тел");
 
-                // Построение новых деталей
                 var newParts = new List<Part>();
+                int droppedTiny = 0;
                 for (int ci = 0; ci < nComp; ci++)
                 {
                     List<int> tris = comps[ci].Value;
 
                     if (tris.Count < 4)
                     {
-                        scene.Add("W_COMPONENT_TINY", DiagSeverity.Warning, p.Name,
-                            "связное тело " + (ci + 1).ToString(CultureInfo.InvariantCulture)
-                            + " из " + p.Name + " содержит менее 4 треугольников — удалено");
+                        droppedTiny++;
                         continue;
                     }
 
-                    // Перенумерация вершин компонента
                     var oldToNew = new Dictionary<int, int>();
                     var newVerts = new List<Vec3d>();
                     var newIndices = new List<int>();
@@ -440,11 +419,17 @@ namespace Cad2Gdml.Pipeline
                     np.VolumeMm3 = 0.0;
                     np.SourceFile = p.SourceFile;
                     np.MeshOpen = false;
+                    np.SplitGroup = p.Name;
 
                     newParts.Add(np);
                 }
 
-                // Замена: удалить старую, вставить новые на её место
+                if (droppedTiny > 0)
+                {
+                    scene.Add("W_COMPONENT_TINY", DiagSeverity.Warning, p.Name,
+                        "удалено тел менее чем из 4 треугольников: " + droppedTiny.ToString(CultureInfo.InvariantCulture));
+                }
+
                 scene.Parts.RemoveAt(pi);
                 for (int ni = 0; ni < newParts.Count; ni++)
                 {
@@ -453,7 +438,6 @@ namespace Cad2Gdml.Pipeline
             }
         }
 
-        // Поиск детали с ролью Crystal
         private static Part FindCrystal(SceneModel scene)
         {
             for (int i = 0; i < scene.Parts.Count; i++)
@@ -464,13 +448,11 @@ namespace Cad2Gdml.Pipeline
             return null;
         }
 
-        // Назначение ролей и обработка открытых сеток
         private static bool AssignRoles(PipelineOptions o, SceneModel scene)
         {
             var roleOpt = new RoleOptions();
             RoleAssigner.Assign(scene, roleOpt, o.CrystalName);
 
-            // Открытые сетки
             for (int oi = scene.Parts.Count - 1; oi >= 0; oi--)
             {
                 Part op = scene.Parts[oi];
@@ -488,7 +470,8 @@ namespace Cad2Gdml.Pipeline
 
                 if (isKey || !o.DropOpen)
                 {
-                    scene.Add("E_MESH_OPEN", DiagSeverity.Error, op.Name, "Открытая сетка.");
+                    scene.Add("E_MESH_OPEN", DiagSeverity.Error, op.Name,
+                        "Открытая сетка (дыры в поверхности). Для неключевых деталей включите «Пропускать открытые детали» (--drop-open) или «--keep-open».");
                     return false;
                 }
 
@@ -503,7 +486,6 @@ namespace Cad2Gdml.Pipeline
                 return false;
             }
 
-            // E_ROLE_AMBIG — всегда ошибка
             for (int i = 0; i < scene.Diagnostics.Count; i++)
             {
                 Diagnostic d = scene.Diagnostics[i];
@@ -511,7 +493,6 @@ namespace Cad2Gdml.Pipeline
                     return false;
             }
 
-            // Проверка наличия кристалла
             bool crystalFound = false;
             for (int i = 0; i < scene.Parts.Count; i++)
             {
@@ -526,7 +507,6 @@ namespace Cad2Gdml.Pipeline
             {
                 if (o.CrystalName != null && o.CrystalName.Length > 0)
                 {
-                    // Кристалл запрошен явно, но не найден → ошибка
                     bool alreadyReported = false;
                     for (int i = 0; i < scene.Diagnostics.Count; i++)
                     {
@@ -542,7 +522,6 @@ namespace Cad2Gdml.Pipeline
                 }
                 else
                 {
-                    // Кристалл не запрошен и не найден — продолжаем без кадра
                     RemoveDiagnostics(scene, "E_ROLE_NONE");
                     scene.Add("W_NO_CRYSTAL", DiagSeverity.Warning, "",
                         "кристалл не найден: кадр координат не строится, детали остаются в координатах файла");
@@ -552,7 +531,6 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Удаление диагностик с указанным кодом
         private static void RemoveDiagnostics(SceneModel scene, string code)
         {
             for (int i = scene.Diagnostics.Count - 1; i >= 0; i--)
@@ -562,7 +540,6 @@ namespace Cad2Gdml.Pipeline
             }
         }
 
-        // Построение и применение кадра (только если кристалл есть)
         private static bool BuildFrame(PipelineOptions o, SceneModel scene, Part crystal)
         {
             var frameOpt = new FrameOptions();
@@ -582,7 +559,6 @@ namespace Cad2Gdml.Pipeline
 
             FrameBuilder.Apply(scene, t);
 
-            // Проверка: источник/контейнер позади переднего торца
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -600,7 +576,6 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Распознавание: Tube/Polycone → Box → Tessellated
         private static void RecognizeShapes(SceneModel scene)
         {
             var revOpt = new RecognizeOptions();
@@ -670,6 +645,78 @@ namespace Cad2Gdml.Pipeline
                 return false;
             }
 
+            // Ручные назначения веществ (overrides)
+            if (o.MaterialOverrides != null && o.MaterialOverrides.Count > 0)
+            {
+                // Валидация значений
+                for (int mi = 0; mi < o.MaterialOverrides.Count; mi++)
+                {
+                    string val = o.MaterialOverrides[mi].Value;
+                    if (lib.Find(val) == null && !lib.IsNistRef(val))
+                    {
+                        scene.Add("E_MAT_UNKNOWN", DiagSeverity.Error, "", "Вещество не найдено: " + val + ".");
+                        return false;
+                    }
+                }
+
+                // Применение: сначала точные, затем подстроки
+                bool[] used = new bool[o.MaterialOverrides.Count];
+                for (int pi = 0; pi < scene.Parts.Count; pi++)
+                {
+                    Part p = scene.Parts[pi];
+                    if (p.Name == null) continue;
+
+                    int matched = -1;
+
+                    // Точное совпадение (ключ с '=' — без подстроки, без '=' — равенство)
+                    for (int mi = 0; mi < o.MaterialOverrides.Count; mi++)
+                    {
+                        string key = o.MaterialOverrides[mi].Key;
+                        if (key == null) continue;
+                        string cmp = key.StartsWith("=") ? key.Substring(1) : key;
+                        if (p.Name.Equals(cmp, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matched = mi;
+                            break;
+                        }
+                    }
+
+                    // Подстрока — только для ключей без '='
+                    if (matched < 0)
+                    {
+                        for (int mi = 0; mi < o.MaterialOverrides.Count; mi++)
+                        {
+                            string key = o.MaterialOverrides[mi].Key;
+                            if (key == null) continue;
+                            if (key.StartsWith("=")) continue;
+                            if (p.Name.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                matched = mi;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (matched >= 0)
+                    {
+                        p.Material = o.MaterialOverrides[matched].Value;
+                        scene.Add("I_MAT_MANUAL", DiagSeverity.Info, p.Name,
+                            "вещество назначено вручную: " + o.MaterialOverrides[matched].Value);
+                        used[matched] = true;
+                    }
+                }
+
+                // Неиспользованные правила
+                for (int mi = 0; mi < o.MaterialOverrides.Count; mi++)
+                {
+                    if (!used[mi])
+                    {
+                        scene.Add("W_MAT_OVERRIDE_UNUSED", DiagSeverity.Warning, "",
+                            "правило вещества без совпадений: " + o.MaterialOverrides[mi].Key);
+                    }
+                }
+            }
+
             for (int i = 0; i < scene.Parts.Count; i++)
             {
                 Part p = scene.Parts[i];
@@ -707,16 +754,14 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Сортировка деталей по имени (ordinal)
         private static void SortParts(SceneModel scene)
         {
-            scene.Parts.Sort(delegate(Part a, Part b)
+            scene.Parts.Sort(delegate (Part a, Part b)
             {
                 return string.CompareOrdinal(a.Name, b.Name);
             });
         }
 
-        // Атомарная запись GDML, PNG, отчёта
         private static bool WriteOutputs(PipelineOptions o, SceneModel scene, PipelineResult result)
         {
             string outDir = (o.OutDir != null && o.OutDir.Length > 0) ? o.OutDir : ".";
@@ -788,7 +833,6 @@ namespace Cad2Gdml.Pipeline
             return true;
         }
 
-        // Удаление временных файлов (игнор ошибок)
         private static void CleanupTemp(string a, string b, string c)
         {
             string[] files = new[] { a, b, c };
@@ -800,12 +844,10 @@ namespace Cad2Gdml.Pipeline
                 }
                 catch
                 {
-                    // игнор
                 }
             }
         }
 
-        // Базовое имя из первого входа
         private static string DeriveBaseName(PipelineOptions o)
         {
             if (o.Inputs != null && o.Inputs.Count > 0)
@@ -826,7 +868,6 @@ namespace Cad2Gdml.Pipeline
             return "output";
         }
 
-        // Уникальные имена входов
         private static List<string> GetInputNames(SceneModel scene)
         {
             var names = new List<string>();
@@ -839,14 +880,12 @@ namespace Cad2Gdml.Pipeline
             return names;
         }
 
-        // Расширение в нижнем регистре
         private static string GetExt(string path)
         {
             string ext = Path.GetExtension(path);
             return (ext != null) ? ext.ToLowerInvariant() : "";
         }
 
-        // Выход: код из первой Error-диагностики
         private static PipelineResult Fail(PipelineResult result)
         {
             string firstError = null;
@@ -866,7 +905,6 @@ namespace Cad2Gdml.Pipeline
             return result;
         }
 
-        // Таблица префиксов → код выхода
         private static int DeriveExitCode(string code)
         {
             if (code == null) return 9;

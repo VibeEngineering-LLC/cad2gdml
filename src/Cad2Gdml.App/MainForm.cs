@@ -9,6 +9,7 @@ using System.Text;
 using System.Windows.Forms;
 using Cad2Gdml.Pipeline;
 using Cad2Gdml.Scene;
+using Cad2Gdml.Materials;
 
 namespace Cad2Gdml.App
 {
@@ -38,6 +39,7 @@ namespace Cad2Gdml.App
         private Button _btnBrowseOut;
         private Button _btnConvert;
         private Button _btnOpenFolder;
+        private Button _btnMaterials;
         private CheckBox _chkAllowDefault;
         private CheckBox _chkNoSplit;
         private CheckBox _chkDropOpen;
@@ -56,6 +58,10 @@ namespace Cad2Gdml.App
 
         // Тултип для списка
         private ToolTip _tipList;
+
+        // Новое: результат, переопределения веществ
+        private PipelineResult _lastResult;
+        private List<KeyValuePair<string, string>> _matOverrides = new List<KeyValuePair<string, string>>();
 
         public MainForm()
         {
@@ -76,22 +82,20 @@ namespace Cad2Gdml.App
             var topTable = new TableLayoutPanel();
             topTable.Dock = DockStyle.Top;
             topTable.AutoSize = true;
-            topTable.ColumnCount = 9;
+            topTable.ColumnCount = 10;
             topTable.RowCount = 3;
             topTable.Padding = new Padding(8);
             topTable.CellBorderStyle = TableLayoutPanelCellBorderStyle.None;
 
-            // Столбцы — все авто, последний процентный
-            for (int i = 0; i < 9; i++)
+            for (int i = 0; i < 10; i++)
                 topTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            topTable.ColumnStyles[7] = new ColumnStyle(SizeType.Percent, 100f);
+            topTable.ColumnStyles[9] = new ColumnStyle(SizeType.Percent, 100f);
 
-            // Строки
             topTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             topTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             topTable.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            // === Ряд 0: кнопки + единицы + кристалл + фронт ===
+            // === Ряд 0 ===
             _btnAddFiles = MakeButton("Добавить файлы…", OnAddFiles);
             _btnAddFiles.Size = new Size(130, 30);
 
@@ -102,6 +106,7 @@ namespace Cad2Gdml.App
             _btnRemove.Size = new Size(130, 30);
 
             var lblUnit = MakeLabel("Единицы:");
+            lblUnit.MaximumSize = Size.Empty;
             _cmbUnit = new ComboBox();
             _cmbUnit.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbUnit.Items.AddRange(new object[] { "мм", "см", "м", "дюйм" });
@@ -110,11 +115,13 @@ namespace Cad2Gdml.App
             _cmbUnit.Margin = new Padding(4);
 
             var lblCrystal = MakeLabel("Кристалл:");
+            lblCrystal.MaximumSize = Size.Empty;
             _txtCrystal = new TextBox();
             _txtCrystal.Width = 130;
             _txtCrystal.Margin = new Padding(4);
 
             var lblFront = MakeLabel("Фронт:");
+            lblFront.MaximumSize = Size.Empty;
             _cmbFront = new ComboBox();
             _cmbFront.DropDownStyle = ComboBoxStyle.DropDownList;
             _cmbFront.Items.AddRange(new object[] { "auto", "+z", "-z" });
@@ -132,14 +139,15 @@ namespace Cad2Gdml.App
             topTable.Controls.Add(lblFront, 7, 0);
             topTable.Controls.Add(_cmbFront, 8, 0);
 
-            // === Ряд 1: папка вывода + обзор + конвертировать (rowspan 2) ===
+            // === Ряд 1 ===
             var lblOutDir = MakeLabel("Папка вывода:");
             _txtOutDir = new TextBox();
             _txtOutDir.Margin = new Padding(4);
             _txtOutDir.Anchor = AnchorStyles.Left | AnchorStyles.Right;
 
             _btnBrowseOut = MakeButton("Обзор…", OnBrowseOut);
-            _btnBrowseOut.Size = new Size(60, 26);
+            _btnBrowseOut.AutoSize = true;
+            _btnBrowseOut.MinimumSize = new Size(70, 26);
 
             _btnConvert = new Button();
             _btnConvert.Text = "Конвертировать";
@@ -155,7 +163,7 @@ namespace Cad2Gdml.App
             topTable.SetRowSpan(_btnConvert, 2);
             topTable.Controls.Add(_btnConvert, 8, 1);
 
-            // === Ряд 2: чекбоксы + открыть папку ===
+            // === Ряд 2 ===
             _chkAllowDefault = new CheckBox();
             _chkAllowDefault.Text = "Разрешить вещество по умолчанию";
             _chkAllowDefault.AutoSize = true;
@@ -165,6 +173,7 @@ namespace Cad2Gdml.App
             _chkDropOpen.Text = "Пропускать открытые детали";
             _chkDropOpen.AutoSize = true;
             _chkDropOpen.Margin = new Padding(4);
+            _chkDropOpen.Checked = true;
 
             _btnOpenFolder = new Button();
             _btnOpenFolder.Text = "Открыть папку";
@@ -173,8 +182,20 @@ namespace Cad2Gdml.App
             _btnOpenFolder.Margin = new Padding(4);
             _btnOpenFolder.Click += OnOpenFolder;
 
-            topTable.SetColumnSpan(_chkAllowDefault, 3);
-            topTable.Controls.Add(_chkAllowDefault, 0, 2);
+            _btnMaterials = new Button();
+            _btnMaterials.Text = "Материалы…";
+            _btnMaterials.Size = new Size(110, 28);
+            _btnMaterials.Enabled = false;
+            _btnMaterials.Margin = new Padding(4);
+            _btnMaterials.Click += OnMaterials;
+
+            var flowBtns = new FlowLayoutPanel();
+            flowBtns.AutoSize = true;
+            flowBtns.WrapContents = false;
+            flowBtns.Margin = new Padding(0);
+            flowBtns.Controls.Add(_btnOpenFolder);
+            flowBtns.Controls.Add(_btnMaterials);
+
             _chkNoSplit = new CheckBox();
             _chkNoSplit.Text = "Не разбивать на тела";
             _chkNoSplit.AutoSize = true;
@@ -186,10 +207,13 @@ namespace Cad2Gdml.App
             flowChecks.Margin = new Padding(0);
             flowChecks.Controls.Add(_chkDropOpen);
             flowChecks.Controls.Add(_chkNoSplit);
+
+            topTable.SetColumnSpan(_chkAllowDefault, 3);
+            topTable.Controls.Add(_chkAllowDefault, 0, 2);
             topTable.SetColumnSpan(flowChecks, 3);
             topTable.Controls.Add(flowChecks, 3, 2);
-            topTable.SetColumnSpan(_btnOpenFolder, 2);
-            topTable.Controls.Add(_btnOpenFolder, 6, 2);
+            topTable.SetColumnSpan(flowBtns, 2);
+            topTable.Controls.Add(flowBtns, 6, 2);
 
             // --- Подпись про 3MF ---
             var lblUnitNote = new Label();
@@ -213,7 +237,6 @@ namespace Cad2Gdml.App
             _lstInputs.SelectedIndexChanged += OnLstSelectionChanged;
             leftPanel.Controls.Add(_lstInputs);
 
-            // Тултип для списка
             _tipList = new ToolTip();
             _tipList.InitialDelay = 400;
 
@@ -244,7 +267,6 @@ namespace Cad2Gdml.App
             _lblStatus.Text = "Готово.";
             _lblStatus.BorderStyle = BorderStyle.FixedSingle;
 
-            // Порядок: Fill → Bottom → Left → Top (topTable последним)
             this.Controls.Add(_picSketch);
             this.Controls.Add(bottomPanel);
             this.Controls.Add(_lblStatus);
@@ -253,7 +275,6 @@ namespace Cad2Gdml.App
             this.Controls.Add(topTable);
         }
 
-        // Фабрика кнопки
         private Button MakeButton(string text, EventHandler handler)
         {
             var b = new Button();
@@ -263,7 +284,6 @@ namespace Cad2Gdml.App
             return b;
         }
 
-        // Фабрика подписи
         private Label MakeLabel(string text)
         {
             var l = new Label();
@@ -275,7 +295,6 @@ namespace Cad2Gdml.App
             return l;
         }
 
-        // Отрисовка строки списка (короткое имя)
         private void OnDrawItem(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0) return;
@@ -285,7 +304,6 @@ namespace Cad2Gdml.App
             e.Graphics.DrawString(display, e.Font, Brushes.Black, e.Bounds);
         }
 
-        // Тултип: полный путь выбранного элемента
         private void OnLstSelectionChanged(object sender, EventArgs e)
         {
             if (_lstInputs.SelectedIndex >= 0)
@@ -295,7 +313,6 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Delete key — удалить выбранные
         private void OnLstKeyDown(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Delete)
@@ -306,7 +323,6 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Удаление выбранных элементов списка
         private void RemoveSelectedItems()
         {
             var toRemove = new List<int>();
@@ -321,17 +337,22 @@ namespace Cad2Gdml.App
                 _lstInputs.Items.RemoveAt(toRemove[i]);
 
             _lstInputs.SelectedIndex = -1;
+            InvalidateOverrides();
         }
 
-        // Фоновый воркер
+        // Сброс переопределений при изменении входов
+        private void InvalidateOverrides()
+        {
+            _matOverrides.Clear();
+            _btnMaterials.Enabled = false;
+        }
+
         private void SetupWorker()
         {
             _worker = new BackgroundWorker();
             _worker.DoWork += OnDoWork;
             _worker.RunWorkerCompleted += OnWorkerDone;
         }
-
-        // --- Обработчики кнопок ---
 
         private void OnAddFiles(object sender, EventArgs e)
         {
@@ -355,6 +376,7 @@ namespace Cad2Gdml.App
                     if (firstAdded)
                         AutoFillOutDir();
                     _lastFolder = Path.GetDirectoryName(dlg.FileName);
+                    InvalidateOverrides();
                 }
             }
         }
@@ -380,6 +402,7 @@ namespace Cad2Gdml.App
                     }
                     if (firstAdded)
                         AutoFillOutDir();
+                    InvalidateOverrides();
                 }
             }
         }
@@ -398,13 +421,11 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Кнопка «Убрать» — удалить выбранные
         private void OnRemoveSelected(object sender, EventArgs e)
         {
             RemoveSelectedItems();
         }
 
-        // Кнопка «Открыть папку»
         private void OnOpenFolder(object sender, EventArgs e)
         {
             string outDir = _txtOutDir.Text.Trim();
@@ -427,14 +448,12 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // STEP — блокируем конвертацию
             if (HasStepInput())
             {
                 SetStatus("STEP пока не поддерживается в этой версии", false);
                 return;
             }
 
-            // Папка вывода: автозаполнение если пуста
             string outDir = _txtOutDir.Text.Trim();
             if (string.IsNullOrEmpty(outDir))
             {
@@ -448,7 +467,6 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // Собираем список входов
             var inputs = new List<string>();
             foreach (string item in _lstInputs.Items)
             {
@@ -469,7 +487,6 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // Проверка на смешанные входы 3MF + STL/OBJ
             if (HasMixedInputs(inputs))
             {
                 MessageBox.Show(this,
@@ -478,7 +495,6 @@ namespace Cad2Gdml.App
                 return;
             }
 
-            // Единицы
             double unitToMm;
             if (AllAre3Mf(inputs))
                 unitToMm = 0.0;
@@ -496,13 +512,15 @@ namespace Cad2Gdml.App
             opts.DropOpen = _chkDropOpen.Checked;
             opts.NoSplit = _chkNoSplit.Checked;
 
+            // Переопределения веществ
+            if (_matOverrides.Count > 0)
+                opts.MaterialOverrides = new List<KeyValuePair<string, string>>(_matOverrides);
+
             _btnOpenFolder.Enabled = false;
             SetControlsEnabled(false);
             SetStatus("Конвертация…", true);
             _worker.RunWorkerAsync(opts);
         }
-
-        // --- Фоновая логика ---
 
         private void OnDoWork(object sender, DoWorkEventArgs e)
         {
@@ -554,6 +572,8 @@ namespace Cad2Gdml.App
 
             SetStatus("Готово → " + result.GdmlPath, true);
             _btnOpenFolder.Enabled = true;
+            _lastResult = result;
+            _btnMaterials.Enabled = true;
 
             if (!string.IsNullOrEmpty(result.PngPath) && File.Exists(result.PngPath))
             {
@@ -577,7 +597,6 @@ namespace Cad2Gdml.App
             RenderReport(result);
         }
 
-        // Отчёт для сбойного прогона
         private void RenderFailureReport(PipelineResult result)
         {
             var sb = new StringBuilder();
@@ -600,7 +619,6 @@ namespace Cad2Gdml.App
             _txtReport.Text = sb.ToString();
         }
 
-        // Формирование текста отчёта (успешный прогон)
         private void RenderReport(PipelineResult result)
         {
             var sb = new StringBuilder();
@@ -647,7 +665,180 @@ namespace Cad2Gdml.App
             _txtReport.Text = sb.ToString();
         }
 
-        // --- Вспомогательные ---
+        // --- Обработчик «Материалы…» ---
+        private void OnMaterials(object sender, EventArgs e)
+        {
+            if (_lastResult == null || _lastResult.Scene == null || _lastResult.Scene.Parts == null)
+                return;
+
+            var dlg = new MaterialsDialog(_lastResult.Scene.Parts);
+            if (dlg.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            // Собираем переопределения из изменений
+            var overrides = new List<KeyValuePair<string, string>>();
+            for (int i = 0; i < dlg.Rows.Count; i++)
+            {
+                MaterialsDialog.RowInfo r = dlg.Rows[i];
+                if (string.IsNullOrEmpty(r.CurrentMaterial)) continue;
+                if (r.CurrentMaterial == r.InitialMaterial) continue;
+                overrides.Add(new KeyValuePair<string, string>("=" + r.InitialName, r.CurrentMaterial));
+            }
+
+            _matOverrides = overrides;
+
+            if (_matOverrides.Count > 0)
+                OnConvert(null, EventArgs.Empty);
+        }
+
+        // Вложенный диалог назначения веществ
+        private sealed class MaterialsDialog : Form
+        {
+            public class RowInfo
+            {
+                public string InitialName;
+                public string InitialMaterial;
+                public string CurrentMaterial;
+            }
+
+            public List<RowInfo> Rows;
+            private DataGridView _grid;
+            private List<string> _initialMats;
+
+            public MaterialsDialog(List<Part> parts)
+            {
+                this.Text = "Назначение веществ";
+                this.ClientSize = new Size(720, 560);
+                this.StartPosition = FormStartPosition.CenterParent;
+                this.Font = new Font("Segoe UI", 9f);
+                this.MinimizeBox = false;
+                this.MaximizeBox = false;
+
+                Rows = new List<RowInfo>();
+                _initialMats = new List<string>();
+
+                // Заполняем строки
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    Part p = parts[i];
+                    string mat = p.Material ?? "";
+                    var ri = new RowInfo();
+                    ri.InitialName = p.Name ?? "";
+                    ri.InitialMaterial = mat;
+                    ri.CurrentMaterial = mat;
+                    Rows.Add(ri);
+                    _initialMats.Add(mat);
+                }
+
+                // DataGridView
+                _grid = new DataGridView();
+                _grid.Dock = DockStyle.Fill;
+                _grid.AllowUserToAddRows = false;
+                _grid.RowHeadersVisible = false;
+                _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+
+                var colPart = new DataGridViewTextBoxColumn();
+                colPart.HeaderText = "Деталь";
+                colPart.ReadOnly = true;
+                colPart.Name = "colPart";
+
+                var colRole = new DataGridViewTextBoxColumn();
+                colRole.HeaderText = "Роль";
+                colRole.ReadOnly = true;
+                colRole.Name = "colRole";
+
+                var colMat = new DataGridViewComboBoxColumn();
+                colMat.HeaderText = "Вещество";
+                colMat.Name = "colMat";
+                colMat.FlatStyle = FlatStyle.Flat;
+
+                // Заполняем Items
+                var lib = MaterialLibrary.Default();
+                var keys = new List<string>();
+                foreach (string k in lib.Materials.Keys)
+                    keys.Add(k);
+                string[] extras = { "G4_AIR", "G4_Al", "G4_Fe", "G4_Cu", "G4_Pb", "G4_Si", "G4_Sn", "G4_WATER", "G4_Galactic", "G4_POLYETHYLENE", "G4_PLEXIGLASS", "G4_STAINLESS-STEEL" };
+                for (int ei = 0; ei < extras.Length; ei++)
+                {
+                    if (!keys.Contains(extras[ei]))
+                        keys.Add(extras[ei]);
+                }
+                keys.Sort(StringComparer.Ordinal);
+                for (int ki = 0; ki < keys.Count; ki++)
+                    colMat.Items.Add(keys[ki]);
+
+                _grid.Columns.Add(colPart);
+                _grid.Columns.Add(colRole);
+                _grid.Columns.Add(colMat);
+
+                // Игнор DataError (значение вне списка)
+                _grid.DataError += delegate { };
+
+                // Allow typing: DropDown style
+                _grid.EditingControlShowing += OnEditingControlShowing;
+
+                // Заполняем строки
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    Part p = parts[i];
+                    int row = _grid.Rows.Add(p.Name ?? "", p.Role.ToString(), p.Material ?? "");
+                }
+
+                // Нижняя панель
+                var bottomPanel = new Panel();
+                bottomPanel.Dock = DockStyle.Bottom;
+                bottomPanel.Height = 40;
+                bottomPanel.Padding = new Padding(8);
+
+                var btnOk = new Button();
+                btnOk.Text = "Применить и пересчитать";
+                btnOk.DialogResult = DialogResult.OK;
+                btnOk.Size = new Size(180, 28);
+                btnOk.Anchor = AnchorStyles.Right;
+
+                var btnReset = new Button();
+                btnReset.Text = "Сбросить";
+                btnReset.Size = new Size(80, 28);
+                btnReset.Anchor = AnchorStyles.Right;
+                btnReset.Click += OnReset;
+
+                var btnCancel = new Button();
+                btnCancel.Text = "Отмена";
+                btnCancel.DialogResult = DialogResult.Cancel;
+                btnCancel.Size = new Size(80, 28);
+                btnCancel.Anchor = AnchorStyles.Right;
+
+                bottomPanel.Controls.Add(btnOk);
+                bottomPanel.Controls.Add(btnReset);
+                bottomPanel.Controls.Add(btnCancel);
+
+                // Раскладка кнопок справа
+                this.AcceptButton = btnOk;
+                this.CancelButton = btnCancel;
+
+                this.Controls.Add(_grid);
+                this.Controls.Add(bottomPanel);
+            }
+
+            private void OnEditingControlShowing(object sender, DataGridViewEditingControlShowingEventArgs e)
+            {
+                if (e.Control is ComboBox)
+                {
+                    var cb = (ComboBox)e.Control;
+                    cb.DropDownStyle = ComboBoxStyle.DropDown;
+                }
+            }
+
+            // Сбросить все значения к начальным
+            private void OnReset(object sender, EventArgs e)
+            {
+                for (int i = 0; i < Rows.Count; i++)
+                {
+                    Rows[i].CurrentMaterial = _initialMats[i];
+                    _grid.Rows[i].Cells[2].Value = _initialMats[i];
+                }
+            }
+        }
 
         private double GetUnitToMm()
         {
@@ -684,7 +875,6 @@ namespace Cad2Gdml.App
             return has3mf && hasOther;
         }
 
-        // Есть ли STEP в списке входов
         private bool HasStepInput()
         {
             for (int i = 0; i < _lstInputs.Items.Count; i++)
@@ -701,7 +891,6 @@ namespace Cad2Gdml.App
             return false;
         }
 
-        // Предупреждение о STEP при добавлении
         private void CheckStepWarning(string file)
         {
             string ext = Path.GetExtension(file);
@@ -713,7 +902,6 @@ namespace Cad2Gdml.App
             }
         }
 
-        // Автозаполнение папки вывода при первом входе
         private void AutoFillOutDir()
         {
             if (!string.IsNullOrEmpty(_txtOutDir.Text.Trim()))
@@ -724,7 +912,6 @@ namespace Cad2Gdml.App
                 _txtOutDir.Text = dir;
         }
 
-        // Вычисление папки вывода по умолчанию из первого входа
         private string ComputeDefaultOutDir()
         {
             if (_lstInputs.Items.Count == 0) return "";
@@ -746,6 +933,7 @@ namespace Cad2Gdml.App
             return Path.Combine(baseDir, "cad2gdml_out");
         }
 
+        // Не трогаем _btnMaterials — он управляется отдельно
         private void SetControlsEnabled(bool en)
         {
             _btnAddFiles.Enabled = en;
