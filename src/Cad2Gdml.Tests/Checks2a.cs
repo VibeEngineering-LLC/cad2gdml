@@ -31,6 +31,14 @@ namespace Cad2Gdml.Tests
             CheckUtil.Assert(r.ExitCode == 0, "Ошибка конвейера: " + r.MainErrorId);
 
             var doc = CheckUtil.Gdml(r);
+            foreach (XElement s in doc.Descendants())
+            {
+                if (s.Name.LocalName == "tube")
+                {
+                    CheckUtil.Near(360.0, CheckUtil.Num(s, "deltaphi"), 1e-9, "tube deltaphi");
+                    CheckUtil.Assert(s.Attribute("aunit") != null && s.Attribute("aunit").Value == "deg", "tube aunit != deg");
+                }
+            }
 
             // Собираем имена
             var matNames = new HashSet<string>();
