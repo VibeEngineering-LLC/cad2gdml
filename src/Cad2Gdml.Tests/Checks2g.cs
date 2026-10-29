@@ -106,8 +106,8 @@ namespace Cad2Gdml.Tests
             for (int i = 0; i < names.Count; i++)
             {
                 string n = names[i];
-                if (n.Length > 66) // база до 64 + служебный суффикс (_s)
-                    throw new InvalidOperationException(group + ": имя длиннее 66: " + n + " (" + n.Length + ")");
+                if (n.Length > 70) // база до 64 + служебные префикс/суффикс (PV_, _s)
+                    throw new InvalidOperationException(group + ": имя длиннее 70: " + n + " (" + n.Length + ")");
                 if (!set.Add(n))
                     throw new InvalidOperationException(group + ": дублирующее имя: " + n);
             }
