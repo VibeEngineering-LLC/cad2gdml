@@ -591,25 +591,37 @@ namespace Cad2Gdml.App
         }
 
         // Гизмо осей в левом нижнем углу
+        // Оси привязаны к виду: направления X, Y, Z поворачиваются так же, как сцена (#CG-34)
         private void DrawGizmo(Graphics g, int w, int h)
         {
             int ox = 50, oy = h - 50;
-            int len = 40;
-
-            using (Pen pX = new Pen(Color.Red, 2f))
-            using (Pen pY = new Pen(Color.LimeGreen, 2f))
-            using (Pen pZ = new Pen(Color.Blue, 2f))
-            using (Font fnt = new Font(FontFamily.GenericSansSerif, 8f))
-            using (Brush b = new SolidBrush(Color.Black))
+            float len = 40f;
+            double yawR = _yaw * Math.PI / 180.0;
+            double pitchR = _pitch * Math.PI / 180.0;
+            double[][] axes = { new double[] { 1, 0, 0 }, new double[] { 0, 1, 0 }, new double[] { 0, 0, 1 } };
+            Color[] colors = { Color.Red, Color.LimeGreen, Color.Blue };
+            string[] labels = { "X", "Y", "Z" };
+            float[] ex = new float[3], ey = new float[3];
+            double[] depth = new double[3];
+            for (int i = 0; i < 3; i++)
             {
-                g.DrawLine(pX, ox, oy, ox + len, oy);
-                g.DrawString("X", fnt, b, ox + len + 2, oy - 6);
-
-                g.DrawLine(pY, ox, oy, ox - len / 2, oy - len / 2);
-                g.DrawString("Y", fnt, b, ox - len / 2 - 12, oy - len / 2 - 6);
-
-                g.DrawLine(pZ, ox, oy, ox, oy - len);
-                g.DrawString("Z", fnt, b, ox - 4, oy - len - 12);
+                RotatePoint(axes[i][0], axes[i][1], axes[i][2], yawR, pitchR, out double rx, out double ry, out double rz);
+                ex[i] = ox + (float)(rx * len);
+                ey[i] = oy - (float)(rz * len);
+                depth[i] = ry;
+            }
+            int[] order = { 0, 1, 2 };
+            Array.Sort(order, delegate (int p, int q) { return depth[q].CompareTo(depth[p]); });
+            using (Font font = new Font(FontFamily.GenericSansSerif, 8f))
+            using (SolidBrush brush = new SolidBrush(Color.Black))
+            {
+                for (int k = 0; k < 3; k++)
+                {
+                    int i = order[k];
+                    using (Pen pen = new Pen(colors[i], 2f))
+                        g.DrawLine(pen, ox, oy, ex[i], ey[i]);
+                    g.DrawString(labels[i], font, brush, ex[i] + (ex[i] >= ox ? 2f : -12f), ey[i] - 6f);
+                }
             }
         }
     }
