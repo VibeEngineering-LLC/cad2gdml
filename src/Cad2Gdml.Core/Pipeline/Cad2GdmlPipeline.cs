@@ -38,6 +38,7 @@ namespace Cad2Gdml.Pipeline
         public List<string> ExcludeParts;
         public List<KeyValuePair<string, string>> RoleOverrides;
         public List<KeyValuePair<string, double>> DensityOverrides;
+        public List<MaterialDef> CustomMaterials; // вещества, заданные вручную (#CG-32)
     }
 
     // Результат конвейера
@@ -950,6 +951,8 @@ namespace Cad2Gdml.Pipeline
                 return false;
             }
 
+            lib.AddCustom(o.CustomMaterials);
+
             // автообнаруженный файл материалов
             if (string.IsNullOrEmpty(o.MaterialsJsonPath) && mp != null)
             {
@@ -1220,6 +1223,7 @@ namespace Cad2Gdml.Pipeline
 
             string mp = EffectiveMaterialsPath(o);
             MaterialLibrary lib = (mp != null) ? MaterialLibrary.LoadJson(mp) : MaterialLibrary.Default();
+            lib.AddCustom(o.CustomMaterials);
             ApplyDensities(o, lib, scene, false);
 
             var sketch = SketchBuilder.Build(scene);

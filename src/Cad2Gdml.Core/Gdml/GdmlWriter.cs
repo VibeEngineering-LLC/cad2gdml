@@ -268,6 +268,12 @@ namespace Cad2Gdml.Gdml
             return key;
         }
 
+        // Известен ли символ элемента таблице GDML-писателя (без учёта регистра)
+        public static bool IsKnownElement(string symbol)
+        {
+            return !string.IsNullOrEmpty(symbol) && ElZ.ContainsKey(CanonicalElementName(symbol)) && ElA.ContainsKey(CanonicalElementName(symbol));
+        }
+
         // Разрешение ссылки в fraction/materialref на каноническое имя
         private static string ResolveRef(string key, MaterialLibrary lib)
         {

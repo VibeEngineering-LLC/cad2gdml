@@ -143,6 +143,14 @@ namespace Cad2Gdml.Materials
             return null;
         }
 
+        // Добавляет вещества, заданные вручную (#CG-32); одноимённое заменяется
+        public void AddCustom(IEnumerable<MaterialDef> defs)
+        {
+            if (defs == null) return;
+            foreach (MaterialDef d in defs)
+                if (d != null && !string.IsNullOrEmpty(d.Name)) Materials[d.Name] = d;
+        }
+
         // Возвращает имя вещества с тем же составом, но другой плотностью
         public string WithDensity(string id, double densityGcm3)
         {

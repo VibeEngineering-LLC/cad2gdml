@@ -1,0 +1,8 @@
+TARGET: src/Cad2Gdml.App/SceneViewerForm.Custom.cs
+DEPENDS: src/Cad2Gdml.App/CustomMaterialDialog.cs
+
+CREATE `src/Cad2Gdml.App/SceneViewerForm.Custom.cs`: the second half of `public sealed partial class SceneViewerForm : Form` (namespace `Cad2Gdml.App`; usings System, System.Collections.Generic, System.Globalization, System.Windows.Forms, Cad2Gdml.Materials). Do NOT redeclare existing fields. EXISTING members of the other half you may use: `MaterialLibrary _lib`, `DataGridViewComboBoxColumn _colMat` (its `Items` hold material display names), `DataGridView _grid` (column 3 = material combo, column 4 = density text), `List<bool> _isScenePart` (per grid row), `bool _suppressEvents`. Add:
+1. `public List<MaterialDef> NewMaterials { get; } = new List<MaterialDef>();` — materials created in this dialog session.
+2. `public void SetInitialCustom(IEnumerable<MaterialDef> defs)`: null-safe; for every def: `_lib.AddCustom(new List<MaterialDef>{def})` and, if `_colMat.Items` does not contain `def.Name`, add it.
+3. `private void OnCustomMaterial(object sender, EventArgs e)` (handler of button «Своё вещество…»): `using (var dlg = new CustomMaterialDialog())`; if `dlg.ShowDialog(this) != DialogResult.OK || dlg.Result == null` return. Else: `_lib.AddCustom(...)` with the result; replace a same-name (ignore case) entry in `NewMaterials` or append; add `Name` to `_colMat.Items` if missing; then, if `_grid.CurrentRow != null` and its `Index` is a valid index into `_isScenePart` with value true, set under `_suppressEvents = true` ... `false` its cell 3 to `Result.Name` and cell 4 to `Result.DensityGcm3.ToString("0.####", CultureInfo.InvariantCulture)`.
+Comments in Russian, short. Keep it compact; think briefly.

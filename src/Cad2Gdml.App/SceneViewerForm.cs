@@ -10,8 +10,9 @@ using Cad2Gdml.Scene;
 namespace Cad2Gdml.App
 {
     // Форма просмотра сцены и назначения веществ
-    public sealed class SceneViewerForm : Form
+    public sealed partial class SceneViewerForm : Form
     {
+        private DataGridViewComboBoxColumn _colMat;
         private readonly SceneModel _scene;
         private MeshView _meshView;
         private DataGridView _grid;
@@ -203,8 +204,11 @@ namespace Cad2Gdml.App
                 Padding = new Padding(4)
             };
 
-            var btnApply = new Button { Text = "Применить и пересчитать", Width = 190, Height = 32, FlatStyle = FlatStyle.System };
+            var btnApply = new Button { Text = "Применить и пересчитать", Width = 165, Height = 32, FlatStyle = FlatStyle.System };
             btnApply.Click += OnApply;
+
+            var btnCustom = new Button { Text = "Своё вещество…", Width = 125, Height = 32, FlatStyle = FlatStyle.System };
+            btnCustom.Click += OnCustomMaterial;
 
             var btnReset = new Button { Text = "Сбросить", Width = 90, Height = 32, FlatStyle = FlatStyle.System };
             btnReset.Click += OnReset;
@@ -214,6 +218,7 @@ namespace Cad2Gdml.App
             _btnClose.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
 
             flow.Controls.Add(btnApply);
+            flow.Controls.Add(btnCustom);
             flow.Controls.Add(btnReset);
             flow.Controls.Add(_btnClose);
             panel.Controls.Add(flow);
@@ -254,7 +259,7 @@ namespace Cad2Gdml.App
             };
             colRole.Items.AddRange(new object[] { "кристалл", "источник", "контейнер", "защита", "корпус", "прочее", "—" });
 
-            var colMat = new DataGridViewComboBoxColumn
+            var colMat = _colMat = new DataGridViewComboBoxColumn
             {
                 HeaderText = "Вещество",
                 FillWeight = 35,
@@ -273,6 +278,7 @@ namespace Cad2Gdml.App
             var items = MaterialNames.RuLabels(MaterialLibrary.Default().Materials.Keys);
             foreach (string item in items)
                 colMat.Items.Add(item);
+            SetInitialCustom(SessionCustom);
 
             _grid.Columns.Add(colScene);
             _grid.Columns.Add(colName);

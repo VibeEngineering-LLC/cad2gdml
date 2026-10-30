@@ -27,12 +27,13 @@ namespace Cad2Gdml.App
     }
 
     // Главное окно (без дизайнера)
-    public sealed class MainForm : Form
+    public sealed partial class MainForm : Form
     {
         // Контролы верхней панели
         private Button _btnAddFiles;
         private Button _btnAddFolder;
         private Button _btnRemove;
+        private Button _btnReplace;
         private ComboBox _cmbUnit;
         private TextBox _txtCrystal;
         private ComboBox _cmbFront;
@@ -109,6 +110,15 @@ namespace Cad2Gdml.App
             _btnRemove = MakeButton("Убрать", OnRemoveSelected);
             _btnRemove.Size = new Size(130, 30);
 
+            _btnReplace = MakeButton("Заменить…", OnReplaceSelected);
+            _btnReplace.Size = new Size(130, 30);
+            var flowRemRep = new FlowLayoutPanel();
+            flowRemRep.AutoSize = true;
+            flowRemRep.WrapContents = false;
+            flowRemRep.Margin = new Padding(0);
+            flowRemRep.Controls.Add(_btnRemove);
+            flowRemRep.Controls.Add(_btnReplace);
+
             var lblUnit = MakeLabel("Единицы:");
             lblUnit.MaximumSize = Size.Empty;
             _cmbUnit = new ComboBox();
@@ -135,7 +145,7 @@ namespace Cad2Gdml.App
 
             topTable.Controls.Add(_btnAddFiles, 0, 0);
             topTable.Controls.Add(_btnAddFolder, 1, 0);
-            topTable.Controls.Add(_btnRemove, 2, 0);
+            topTable.Controls.Add(flowRemRep, 2, 0);
             topTable.Controls.Add(lblUnit, 3, 0);
             topTable.Controls.Add(_cmbUnit, 4, 0);
             topTable.Controls.Add(lblCrystal, 5, 0);
@@ -358,6 +368,7 @@ namespace Cad2Gdml.App
             _matOverrides.Clear();
             _roleOverrides.Clear();
             _densityOverrides.Clear();
+            _customMaterials.Clear();
             _excluded.Clear();
             _btnMaterials.Enabled = false;
         }
@@ -518,6 +529,8 @@ namespace Cad2Gdml.App
             // Переопределения веществ
             if (_matOverrides.Count > 0)
                 opts.MaterialOverrides = new List<KeyValuePair<string, string>>(_matOverrides);
+            if (_customMaterials.Count > 0)
+                opts.CustomMaterials = new List<MaterialDef>(_customMaterials);
 
             // Переопределения ролей
             if (_roleOverrides.Count > 0)
@@ -839,6 +852,7 @@ namespace Cad2Gdml.App
             _btnAddFiles.Enabled = en;
             _btnAddFolder.Enabled = en;
             _btnRemove.Enabled = en;
+            _btnReplace.Enabled = en;
             _cmbUnit.Enabled = en;
             _txtCrystal.Enabled = en;
             _cmbFront.Enabled = en;
