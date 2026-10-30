@@ -147,6 +147,7 @@ namespace Cad2Gdml.App
         {
             _yaw = 30.0;
             _pitch = 20.0;
+            _rot = new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
             _zoom = 1.0;
             _panX = 0;
             _panY = 0;
@@ -226,8 +227,42 @@ namespace Cad2Gdml.App
             }
         }
 
+        // Аккумуляция вращения вида относительно экрана (#CG-35):
+        // горизонтальное движение мыши — вращение вокруг вертикальной оси экрана,
+        // вертикальное — вокруг горизонтальной оси экрана.
+        private double[] _rot = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+
+        private void RotateView(double dxDeg, double dyDeg)
+        {
+            double a = dxDeg * Math.PI / 180.0;
+            double b = dyDeg * Math.PI / 180.0;
+            double ca = Math.Cos(a), sa = Math.Sin(a);
+            double cb = Math.Cos(b), sb = Math.Sin(b);
+
+            // Вращение вокруг вертикальной оси экрана (z)
+            double[] rz = { ca, -sa, 0, sa, ca, 0, 0, 0, 1 };
+            // Вращение вокруг горизонтальной оси экрана (x)
+            double[] rx = { 1, 0, 0, 0, cb, -sb, 0, sb, cb };
+
+            _rot = MulMat(rx, MulMat(rz, _rot));
+        }
+
+        private static double[] MulMat(double[] p, double[] q)
+        {
+            double[] r = new double[9];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                {
+                    double s = 0;
+                    for (int k = 0; k < 3; k++)
+                        s += p[i * 3 + k] * q[k * 3 + j];
+                    r[i * 3 + j] = s;
+                }
+            return r;
+        }
+
         // Вращение: yaw вокруг Z, pitch вокруг X (стандартный turntable, Z — вверх)
-        private static void RotatePoint(double x, double y, double z,
+        private void RotatePoint(double x, double y, double z,
             double yawR, double pitchR, out double rx, out double ry, out double rz)
         {
             double cy = Math.Cos(yawR), sy = Math.Sin(yawR);
@@ -239,11 +274,15 @@ namespace Cad2Gdml.App
             double z1 = z;
 
             // Pitch вокруг X
-            rx = x1;
-            ry = y1 * cp - z1 * sp;
-            rz = y1 * sp + z1 * cp;
-        }
+            double vx = x1;
+            double vy = y1 * cp - z1 * sp;
+            double vz = y1 * sp + z1 * cp;
 
+            // Поворот вида относительно экрана (#CG-35)
+            rx = _rot[0] * vx + _rot[1] * vy + _rot[2] * vz;
+            ry = _rot[3] * vx + _rot[4] * vy + _rot[5] * vz;
+            rz = _rot[6] * vx + _rot[7] * vy + _rot[8] * vz;
+        }
         // Проекция точки сцены на экран
         private void Project(double x, double y, double z,
             double yawR, double pitchR, double scale, double cx, double cyy,
@@ -306,10 +345,7 @@ namespace Cad2Gdml.App
 
             if (_leftDown)
             {
-                _yaw += dx * 0.5;
-                _pitch += dy * 0.5;
-                if (_pitch > 89.0) _pitch = 89.0;
-                if (_pitch < -89.0) _pitch = -89.0;
+                RotateView(dx * 0.5, dy * 0.5);
                 Invalidate();
                 RaiseViewChanged();
             }
