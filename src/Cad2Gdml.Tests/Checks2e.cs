@@ -59,10 +59,10 @@ namespace Cad2Gdml.Tests
             // Кристалл и маленький бокс в одном файле
             var tris = new List<double[]>(Fixtures.Cylinder(25.4, 50.8, 64, 10.0));
             tris.AddRange(Fixtures.Box(3, 3, 3, 100, 0, 5));
-            Fixtures.WriteBinaryStl(Path.Combine(dir, "crystal.stl"), tris);
+            Fixtures3mf.WriteObj(Path.Combine(dir, "crystal.obj"), tris, "crystal");
             Fixtures.WriteBinaryStl(Path.Combine(dir, "water_sample.stl"), Fixtures.Cylinder(30, 40, 64, 70));
 
-            var r = RunOpt(dir, new[] { "crystal.stl", "water_sample.stl" }, true, false, false, false);
+            var r = RunOpt(dir, new[] { "crystal.obj", "water_sample.stl" }, true, false, false, false);
             CheckUtil.Assert(r.ExitCode == 0, "split_role_inherit: ExitCode != 0, код=" + r.MainErrorId);
             CheckUtil.Assert(Has(r, "I_SPLIT"), "split_role_inherit: нет I_SPLIT");
             CheckUtil.Assert(Has(r, "W_ROLE_GUESS"), "split_role_inherit: нет W_ROLE_GUESS");
@@ -85,10 +85,10 @@ namespace Cad2Gdml.Tests
             // Два бокса, делящие ребро; второй инвертирован
             var tris = new List<double[]>(Fixtures.Box(20, 20, 80, 0, 0, 40));
             tris.AddRange(Fixtures.FlipAll(Fixtures.Box(10, 10, 80, 15, 15, 40)));
-            Fixtures.WriteBinaryStl(Path.Combine(dir, "crystal.stl"), tris);
+            Fixtures3mf.WriteObj(Path.Combine(dir, "crystal.obj"), tris, "crystal");
             Fixtures.WriteBinaryStl(Path.Combine(dir, "water_sample.stl"), Fixtures.Cylinder(30, 40, 64, 70));
 
-            var r = RunOpt(dir, new[] { "crystal.stl", "water_sample.stl" }, true, false, false, false);
+            var r = RunOpt(dir, new[] { "crystal.obj", "water_sample.stl" }, true, false, false, false);
             CheckUtil.Assert(r.ExitCode == 0, "touching_inverted_body: ExitCode != 0, код=" + r.MainErrorId);
             CheckUtil.Assert(Has(r, "W_MESH_FLIPPED"), "touching_inverted_body: нет W_MESH_FLIPPED");
             CheckUtil.Assert(!Has(r, "E_MESH_NONMANIFOLD"), "touching_inverted_body: есть E_MESH_NONMANIFOLD");
@@ -112,10 +112,10 @@ namespace Cad2Gdml.Tests
 
             var tris = new List<double[]>(Fixtures.Box(20, 20, 80, 0, 0, 40));
             tris.AddRange(Fixtures.FlipAll(Fixtures.Box(10, 10, 80, 15, 15, 40)));
-            Fixtures.WriteBinaryStl(Path.Combine(dir, "crystal.stl"), tris);
+            Fixtures3mf.WriteObj(Path.Combine(dir, "crystal.obj"), tris, "crystal");
             Fixtures.WriteBinaryStl(Path.Combine(dir, "water_sample.stl"), Fixtures.Cylinder(30, 40, 64, 70));
 
-            var r = RunOpt(dir, new[] { "crystal.stl", "water_sample.stl" }, true, false, false, true);
+            var r = RunOpt(dir, new[] { "crystal.obj", "water_sample.stl" }, true, false, false, true);
             CheckUtil.Assert(r.ExitCode == 3, "nosplit_nonmanifold: ExitCode=" + r.ExitCode + ", ожидаем 3");
             CheckUtil.Assert(r.MainErrorId == "E_MESH_NONMANIFOLD", "nosplit_nonmanifold: MainErrorId=" + r.MainErrorId);
         }

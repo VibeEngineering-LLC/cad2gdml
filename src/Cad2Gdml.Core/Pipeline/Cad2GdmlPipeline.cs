@@ -564,6 +564,12 @@ namespace Cad2Gdml.Pipeline
 
                 if (found.Count <= 1) continue;
 
+                // STL — только простая деталь: один файл = одна деталь, на тела не делим (#CG-33)
+                if (p.SourceFile != null && p.SourceFile.EndsWith(".stl", StringComparison.OrdinalIgnoreCase))
+                {
+                    scene.Add("W_STL_MULTIBODY", DiagSeverity.Warning, p.Name, "в STL несколько отдельных тел (" + found.Count.ToString(CultureInfo.InvariantCulture) + "): оставлено одной деталью; для сборок используйте OBJ, 3MF, STEP или .blend");
+                    continue;
+                }
                 var compMap = new Dictionary<int, List<int>>();
                 for (int ci0 = 0; ci0 < found.Count; ci0++) compMap[ci0] = found[ci0];
 

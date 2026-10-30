@@ -267,6 +267,11 @@ namespace Cad2Gdml.App
                     int r = int.Parse(hex.Substring(0, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
                     int g = int.Parse(hex.Substring(2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
                     int b = int.Parse(hex.Substring(4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                    // Насыщенность ×1,7 от серого: бледные «прочие» цвета палитры становятся различимыми
+                    int gray = (r + g + b) / 3;
+                    r = Clamp255((int)(gray + (r - gray) * 1.7));
+                    g = Clamp255((int)(gray + (g - gray) * 1.7));
+                    b = Clamp255((int)(gray + (b - gray) * 1.7));
                     return Color.FromArgb(r, g, b);
                 }
             }
@@ -496,17 +501,19 @@ namespace Cad2Gdml.App
                         // При активной подсветке — затенение 60 % к белому
                         if (hasHi)
                         {
-                            cr = Clamp255((int)(cr + (255 - cr) * 0.6));
-                            cg = Clamp255((int)(cg + (255 - cg) * 0.6));
-                            cb = Clamp255((int)(cb + (255 - cb) * 0.6));
+                            cr = Clamp255((int)(cr + (255 - cr) * 0.35));
+                            cg = Clamp255((int)(cg + (255 - cg) * 0.35));
+                            cb = Clamp255((int)(cb + (255 - cb) * 0.35));
                         }
                         fill = Color.FromArgb(255, cr, cg, cb);
                     }
 
+                    // Подсвеченная деталь чуть ближе: общая грань с соседом (полость/кристалл) не мерцает
+                    float bias = triHi[i] ? (float)(_radius * 1e-3) : 0f;
                     zb.FillTriangle(
-                        triPts[i * 6 + 0], triPts[i * 6 + 1], vtxDepth[i * 3 + 0],
-                        triPts[i * 6 + 2], triPts[i * 6 + 3], vtxDepth[i * 3 + 1],
-                        triPts[i * 6 + 4], triPts[i * 6 + 5], vtxDepth[i * 3 + 2],
+                        triPts[i * 6 + 0], triPts[i * 6 + 1], vtxDepth[i * 3 + 0] - bias,
+                        triPts[i * 6 + 2], triPts[i * 6 + 3], vtxDepth[i * 3 + 1] - bias,
+                        triPts[i * 6 + 4], triPts[i * 6 + 5], vtxDepth[i * 3 + 2] - bias,
                         fill.ToArgb());
                 }
 

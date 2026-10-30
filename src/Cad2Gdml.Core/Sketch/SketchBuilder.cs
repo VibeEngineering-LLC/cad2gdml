@@ -619,6 +619,8 @@ namespace Cad2Gdml.Sketch
                 }
             }
 
+            // Нулевые отрезки (вершина ровно на плоскости, соседей сверху нет) цепочку не образуют
+            segs.RemoveAll(delegate (double[] sg) { return Math.Abs(sg[0] - sg[2]) < 1e-12 && Math.Abs(sg[1] - sg[3]) < 1e-12; });
             if (segs.Count == 0)
             {
                 return;
@@ -631,23 +633,14 @@ namespace Cad2Gdml.Sketch
         // Пересечение отрезка с y = 0 (сдвинутые точки); null если нет
         private static double[] CrossY(Vec3d a, Vec3d b)
         {
-            if (Math.Abs(a.Y) < 1e-12 && Math.Abs(b.Y) < 1e-12)
-            {
-                return null;
-            }
-            if (a.Y * b.Y > 0.0)
+            // Вершина ровно на плоскости относится к стороне «≤ 0»: ребро, лежащее в плоскости, даёт один отрезок
+            // (у соседа сверху), а не два; иначе шов сетки удваивается и рвёт цепочку контура (#CG-29)
+            if ((a.Y > 0.0) == (b.Y > 0.0))
             {
                 return null;
             }
 
             double t = a.Y / (a.Y - b.Y);
-            if (t < -1e-9 || t > 1.0 + 1e-9)
-            {
-                return null;
-            }
-            if (t < 0.0) { t = 0.0; }
-            if (t > 1.0) { t = 1.0; }
-
             double x = a.X + t * (b.X - a.X);
             double z = a.Z + t * (b.Z - a.Z);
             return new double[] { x, z };
