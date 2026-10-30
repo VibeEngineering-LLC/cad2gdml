@@ -501,6 +501,15 @@ namespace Cad2Gdml.App
 
                 if (total == 0) { DrawGizmo(g, w, h); return; }
 
+                // Приоритет глубины при совпадающих гранях (#CG-36): меньшая (вложенная) деталь ближе к зрителю
+                float[] partBias = new float[_parts.Count];
+                for (int pi = 0; pi < _parts.Count; pi++)
+                {
+                    int bigger = 0;
+                    for (int pj = 0; pj < _parts.Count; pj++)
+                        if (_parts[pj].VolumeMm3 > _parts[pi].VolumeMm3) bigger++;
+                    partBias[pi] = (float)(_radius * 2e-5) * bigger;
+                }
                 // Rasterизация через Z-буфер
                 ZBuffer zb = new ZBuffer(w, h);
                 zb.Clear(BackColor.ToArgb());
@@ -545,7 +554,7 @@ namespace Cad2Gdml.App
                     }
 
                     // Подсвеченная деталь чуть ближе: общая грань с соседом (полость/кристалл) не мерцает
-                    float bias = triHi[i] ? (float)(_radius * 1e-3) : 0f;
+                    float bias = (triHi[i] ? (float)(_radius * 1e-3) : 0f) + partBias[triPart[i]];
                     zb.FillTriangle(
                         triPts[i * 6 + 0], triPts[i * 6 + 1], vtxDepth[i * 3 + 0] - bias,
                         triPts[i * 6 + 2], triPts[i * 6 + 3], vtxDepth[i * 3 + 1] - bias,

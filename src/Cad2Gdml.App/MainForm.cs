@@ -337,8 +337,14 @@ namespace Cad2Gdml.App
                 if (_lstInputs.GetSelected(i))
                     toRemove.Add(i);
             }
-            if (toRemove.Count == 0) return;
-
+            // Без выделения: единственный файл убираем сразу, иначе подсказка (#CG-38)
+            if (toRemove.Count == 0 && _lstInputs.Items.Count == 1) toRemove.Add(0);
+            if (toRemove.Count == 0)
+            {
+                if (_lstInputs.Items.Count > 1)
+                    SetStatus("Выберите файл в списке слева (Ctrl или Shift — несколько), затем «Убрать».", false);
+                return;
+            }
             for (int i = toRemove.Count - 1; i >= 0; i--)
                 _lstInputs.Items.RemoveAt(toRemove[i]);
 
