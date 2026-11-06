@@ -122,6 +122,9 @@ namespace Cad2Gdml.Pipeline
                 Trace("recognize");
                 RecognizeShapes(scene);
 
+                // Взаимное проникновение тел и тела целиком внутри других (предупреждения W_OVERLAP / W_INSIDE)
+                Trace("overlap");
+                OverlapCheck.Run(scene);
                 Trace("materials");
                 if (!ResolveMaterials(o, scene))
                     return Fail(result);
