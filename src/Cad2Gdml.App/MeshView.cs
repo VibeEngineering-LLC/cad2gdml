@@ -527,6 +527,9 @@ namespace Cad2Gdml.App
                     float dot = nx * (float)lx + ny * (float)ly + nz * (float)lz;
                     if (dot < 0) dot = -dot;
                     float lam = 0.55f + 0.45f * dot;
+                    // В сечении через разрез видны обратные грани разрезанного тела: красим их плоско,
+                    // чтобы срез выглядел сплошным, а не прозрачным
+                    if (_sectionEnabled && ny > 0) lam = 0.85f;
 
                     Color fill;
                     if (triHi[i])
@@ -562,6 +565,55 @@ namespace Cad2Gdml.App
                         fill.ToArgb());
                 }
 
+                if (_sectionEnabled)
+                {
+                    double capUx = 0, capUy = 0, capUz = 0;
+                    if (_sectionAxis == 0) capUx = 1; else if (_sectionAxis == 1) capUy = 1; else capUz = 1;
+                    RotatePoint(capUx, capUy, capUz, yawR, pitchR, out double capNvx, out double capNvy, out double capNvz);
+                    double capD = planePos - (_sectionAxis == 0 ? _centre.X : _sectionAxis == 1 ? _centre.Y : _centre.Z);
+                    // плоскость ребром к зрителю — крышку рисовать нечего
+                    bool capOk = Math.Abs(capNvy) >= 1e-3;
+                    // коэффициенты глубины плоскости сечения
+                    float capA = (float)(-capNvx / (capNvy * scale));
+                    float capB = (float)(capNvz / (capNvy * scale));
+                    float capC = (float)(capD / capNvy + capNvx * cx / (capNvy * scale) - capNvz * cyy / (capNvy * scale));
+                    byte[] capMask = new byte[w * h];
+                    for (int capPi = 0; capOk && capPi < _parts.Count; capPi++)
+                    {
+                        Part capPart = _parts[capPi];
+                        if (Hidden.Contains(capPart.Name) || capPart.MeshOpen) continue;
+                        Array.Clear(capMask, 0, capMask.Length);
+                        // XOR всех треугольников детали — нечётность = принадлежность сечению
+                        for (int capI = 0; capI < total; capI++)
+                        {
+                            if (triPart[capI] != capPi) continue;
+                            int capO = capI * 6;
+                            zb.XorTriangle(triPts[capO], triPts[capO + 1], triPts[capO + 2], triPts[capO + 3], triPts[capO + 4], triPts[capO + 5], capMask);
+                        }
+                        bool capHi = _highlight != null && capPart.Name == _highlight;
+                        Color capCol;
+                        if (capHi)
+                        {
+                            capCol = Color.FromArgb(255, 217, 119, 0);
+                        }
+                        else
+                        {
+                            Color capBase = GetPartColor(capPart);
+                            int capR = Clamp255((int)(capBase.R * 0.85));
+                            int capG = Clamp255((int)(capBase.G * 0.85));
+                            int capBl = Clamp255((int)(capBase.B * 0.85));
+                            if (hasHi)
+                            {
+                                capR = (int)(capR + (255 - capR) * 0.35);
+                                capG = (int)(capG + (255 - capG) * 0.35);
+                                capBl = (int)(capBl + (255 - capBl) * 0.35);
+                            }
+                            capCol = Color.FromArgb(255, capR, capG, capBl);
+                        }
+                        float capBias = partBias[capPi] + (capHi ? (float)(_radius * 1e-3) : 0f);
+                        zb.StampMask(capMask, capA, capB, capC, capBias, capCol.ToArgb());
+                    }
+                }
                 using (Bitmap bmp = zb.ToBitmap())
                     g.DrawImageUnscaled(bmp, 0, 0);
 

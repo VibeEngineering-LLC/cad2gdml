@@ -90,6 +90,61 @@ namespace Cad2Gdml.Sketch
             }
         }
 
+        public void XorTriangle(float x0, float y0, float x1, float y1, float x2, float y2, byte[] mask)
+        {
+            // Удвоенная ориентированная площадь; вырожденный треугольник пропускаем
+            float area2 = (x2 - x1) * (y0 - y1) - (y2 - y1) * (x0 - x1);
+            if (Math.Abs(area2) < 1e-6f) return;
+
+            // Ограничивающий прямоугольник, обрезанный по буферу
+            int minPx = Math.Max(0, (int)Math.Floor(Math.Min(x0, Math.Min(x1, x2))));
+            int maxPx = Math.Min(Width - 1, (int)Math.Ceiling(Math.Max(x0, Math.Max(x1, x2))));
+            int minPy = Math.Max(0, (int)Math.Floor(Math.Min(y0, Math.Min(y1, y2))));
+            int maxPy = Math.Min(Height - 1, (int)Math.Ceiling(Math.Max(y0, Math.Max(y1, y2))));
+
+            for (int py = minPy; py <= maxPy; py++)
+            {
+                for (int px = minPx; px <= maxPx; px++)
+                {
+                    // Небольшой сдвиг точки выборки, чтобы пиксель на общем ребре
+                    // не переключался дважды соседними треугольниками
+                    float sx = px + 0.5f + 1e-4f;
+                    float sy = py + 0.5f + 2e-4f;
+
+                    // Рёберные функции для трёх рёбер
+                    float e0 = (x1 - x0) * (sy - y0) - (y1 - y0) * (sx - x0);
+                    float e1 = (x2 - x1) * (sy - y1) - (y2 - y1) * (sx - x1);
+                    float e2 = (x0 - x2) * (sy - y2) - (y0 - y2) * (sx - x2);
+
+                    // Внутри (или на границе) при любом порядке вершин
+                    if ((e0 >= 0f && e1 >= 0f && e2 >= 0f) ||
+                        (e0 <= 0f && e1 <= 0f && e2 <= 0f))
+                    {
+                        mask[py * Width + px] ^= 1;
+                    }
+                }
+            }
+        }
+
+        public void StampMask(byte[] mask, float a, float b, float c, float bias, int argb)
+        {
+            int total = Width * Height;
+            for (int i = 0; i < total; i++)
+            {
+                if (mask[i] == 0) continue;
+                int px = i % Width;
+                int py = i / Width;
+                // Глубина на пиксель
+                float d = a * (px + 0.5f) + b * (py + 0.5f) + c - bias;
+                if (d < Depth[i])
+                {
+                    Depth[i] = d;
+                    Color[i] = argb;
+                }
+                // Обнуляем флаг, чтобы маску можно было использовать для следующей детали
+                mask[i] = 0;
+            }
+        }
         // Простая линия DDA, без Z-теста (для оверлеев)
         public void DrawLine(float x0, float y0, float x1, float y1, int argb)
         {

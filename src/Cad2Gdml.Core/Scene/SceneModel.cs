@@ -107,11 +107,14 @@ namespace Cad2Gdml.Scene
         public List<Diagnostic> Diagnostics { get; }
         public string Title { get; set; }
         public string SourceDescription { get; set; }
+        // Вещества, заданные внутри исходного файла (GDML): окно «Сцена и вещества» показывает их плотность
+        public List<Cad2Gdml.Materials.MaterialDef> ExtraMaterials { get; }
 
         public SceneModel()
         {
             Parts = new List<Part>();
             Diagnostics = new List<Diagnostic>();
+            ExtraMaterials = new List<Cad2Gdml.Materials.MaterialDef>();
         }
 
         // Добавить строку диагностики

@@ -49,6 +49,7 @@ namespace Cad2Gdml.App
         {
             _scene = scene;
             _lib = MaterialLibrary.Default();
+            if (scene != null && scene.ExtraMaterials != null) _lib.AddCustom(scene.ExtraMaterials);
             Overrides = new List<KeyValuePair<string, string>>();
             RoleOverrides = new List<KeyValuePair<string, string>>();
             DensityOverrides = new List<KeyValuePair<string, double>>();

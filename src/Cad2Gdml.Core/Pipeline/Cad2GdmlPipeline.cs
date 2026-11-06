@@ -285,6 +285,23 @@ namespace Cad2Gdml.Pipeline
                     var parts = ThreeMfImporter.Load(input, o.UnitToMm);
                     AddParts(scene, parts, input);
                 }
+                else if (ext == ".gdml")
+                {
+                    // GDML: единицы заданы в самом файле, o.UnitToMm не нужен
+                    IList<string> skipped;
+                    var parts = GdmlImporter.Load(input, out skipped);
+                    AddParts(scene, parts, input);
+                    foreach (var sk in skipped)
+                        scene.Add("W_GDML_SKIPPED", DiagSeverity.Warning, sk, "Неподдерживаемый вид тела GDML пропущен.");
+                    // вещества, заданные внутри самого GDML (не G4_*), становятся своими веществами
+                    List<string> matNotes;
+                    var gdmlMats = GdmlMaterials.Load(input, out matNotes);
+                    if (o.CustomMaterials == null) o.CustomMaterials = new List<MaterialDef>();
+                    o.CustomMaterials.AddRange(gdmlMats);
+                    scene.ExtraMaterials.AddRange(gdmlMats);
+                    foreach (var mn in matNotes)
+                        scene.Add("W_GDML_MATERIAL", DiagSeverity.Warning, input, mn);
+                }
                 else
                 {
                     scene.Add("E_FORMAT", DiagSeverity.Error, input, "Неподдерживаемое расширение: " + ext);
@@ -848,6 +865,11 @@ namespace Cad2Gdml.Pipeline
             frameOpt.FrontSign = (o.FrontSign != null && o.FrontSign.Length > 0)
                 ? o.FrontSign : "auto";
 
+            // GDML уже задаёт физическую систему координат (ось кристалла и направление «вперёд»):
+            // при автоопределении торца модель переворачивалась, поэтому берём +z из файла
+            if (frameOpt.FrontSign == "auto" && crystal != null && crystal.SourceFile != null
+                && crystal.SourceFile.EndsWith(".gdml", StringComparison.OrdinalIgnoreCase))
+                frameOpt.FrontSign = "+z";
             Affine3 t;
             try
             {

@@ -290,7 +290,7 @@ namespace Cad2Gdml.Cli
         private static void PrintUsage()
         {
             Console.WriteLine("Использование: cad2gdml <вход>... --out <каталог> [параметры]");
-            Console.WriteLine("  Вход: .stl .obj .step .stp .blend .3mf (или каталог с .stl)");
+            Console.WriteLine("  Вход: .stl .obj .step .stp .blend .3mf .gdml (или каталог с .stl)");
             Console.WriteLine();
             Console.WriteLine("Параметры:");
             Console.WriteLine("  --out <каталог>            Каталог вывода (обязательно)");

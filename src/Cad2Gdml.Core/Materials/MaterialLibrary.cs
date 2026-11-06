@@ -64,6 +64,19 @@ namespace Cad2Gdml.Materials
                 new KeyValuePair<string, double>("Cu", 1.0));
             lib.Materials["G4_Pb"] = Nist("G4_Pb", 11.35,
                 new KeyValuePair<string, double>("Pb", 1.0));
+            // Плотности по справочнику Geant4 NIST (значения вписаны по памяти, сверка с G4NistMaterialBuilder не выполнена)
+            lib.Materials["G4_Cd"] = Nist("G4_Cd", 8.65,
+                new KeyValuePair<string, double>("Cd", 1.0));
+            lib.Materials["G4_SODIUM_IODIDE"] = Nist("G4_SODIUM_IODIDE", 3.667,
+                new KeyValuePair<string, double>("Na", 0.153373), new KeyValuePair<string, double>("I", 0.846627));
+            lib.Materials["G4_POLYPROPYLENE"] = Nist("G4_POLYPROPYLENE", 0.9,
+                new KeyValuePair<string, double>("H", 0.143711), new KeyValuePair<string, double>("C", 0.856289));
+            lib.Materials["G4_RUBBER_NATURAL"] = Nist("G4_RUBBER_NATURAL", 0.92,
+                new KeyValuePair<string, double>("H", 0.118371), new KeyValuePair<string, double>("C", 0.881629));
+            lib.Materials["G4_STAINLESS-STEEL"] = Nist("G4_STAINLESS-STEEL", 8.0,
+                new KeyValuePair<string, double>("Fe", 0.746213), new KeyValuePair<string, double>("Cr", 0.169001),
+                new KeyValuePair<string, double>("Ni", 0.084786));
+            lib.Materials["G4_Pyrex_Glass"] = Nist("G4_Pyrex_Glass", 2.23);
             lib.Materials["G4_Sn"] = Nist("G4_Sn", 7.31,
                 new KeyValuePair<string, double>("Sn", 1.0));
             lib.Materials["G4_Si"] = Nist("G4_Si", 2.33,

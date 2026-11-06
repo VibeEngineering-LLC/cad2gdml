@@ -31,7 +31,7 @@ namespace Cad2Gdml.App
             // Диалог выбора нового файла
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp;*.blend|Все|*.*";
+                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp;*.blend;*.gdml|Все|*.*";
                 if (!string.IsNullOrEmpty(_lastFolder) && Directory.Exists(_lastFolder))
                     dlg.InitialDirectory = _lastFolder;
 

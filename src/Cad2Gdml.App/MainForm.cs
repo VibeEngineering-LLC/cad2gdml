@@ -384,7 +384,7 @@ namespace Cad2Gdml.App
         {
             using (var dlg = new OpenFileDialog())
             {
-                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp;*.blend|STL|*.stl|OBJ|*.obj|3MF|*.3mf|STEP|*.step;*.stp|Blender|*.blend|Все|*.*";
+                dlg.Filter = "3D-файлы|*.stl;*.obj;*.3mf;*.step;*.stp;*.blend;*.gdml|STL|*.stl|OBJ|*.obj|3MF|*.3mf|STEP|*.step;*.stp|Blender|*.blend|GDML|*.gdml|Все|*.*";
                 dlg.Multiselect = true;
                 if (!string.IsNullOrEmpty(_lastFolder) && Directory.Exists(_lastFolder))
                     dlg.InitialDirectory = _lastFolder;
@@ -497,7 +497,7 @@ namespace Cad2Gdml.App
 
             if (inputs.Count == 0)
             {
-                SetStatus("Нет поддерживаемых файлов (.stl/.obj/.3mf/.step/.blend).", false);
+                SetStatus("Нет поддерживаемых файлов (.stl/.obj/.3mf/.step/.blend/.gdml).", false);
                 return;
             }
 
@@ -794,7 +794,7 @@ namespace Cad2Gdml.App
             for (int i = 0; i < files.Count; i++)
             {
                 string ext = Path.GetExtension(files[i]);
-                if (ext == null || ext.ToLowerInvariant() != ".3mf")
+                if (ext == null || (ext.ToLowerInvariant() != ".3mf" && ext.ToLowerInvariant() != ".gdml"))
                     return false;
             }
             return true;
@@ -807,7 +807,7 @@ namespace Cad2Gdml.App
             for (int i = 0; i < files.Count; i++)
             {
                 string ext = Path.GetExtension(files[i]);
-                if (ext != null && ext.ToLowerInvariant() == ".3mf")
+                if (ext != null && (ext.ToLowerInvariant() == ".3mf" || ext.ToLowerInvariant() == ".gdml"))
                     has3mf = true;
                 else
                     hasOther = true;
@@ -882,7 +882,7 @@ namespace Cad2Gdml.App
                     string ext = Path.GetExtension(f);
                     if (ext == null) continue;
                     ext = ext.ToLowerInvariant();
-                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf" || ext == ".step" || ext == ".stp" || ext == ".blend")
+                    if (ext == ".stl" || ext == ".obj" || ext == ".3mf" || ext == ".step" || ext == ".stp" || ext == ".blend" || ext == ".gdml")
                         result.Add(f);
                 }
                 return result.ToArray();
