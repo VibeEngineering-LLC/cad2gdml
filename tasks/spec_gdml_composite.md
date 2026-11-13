@@ -1,0 +1,9 @@
+Напиши один C#-файл (C# 7.3, .NET Framework 4.8, без внешних пакетов). Верни ТОЛЬКО код файла, без пояснений и без markdown-ограждений. Думай коротко и сразу пиши код. Не больше 80 строк.
+
+using System; System.Collections.Generic; System.Globalization; System.Linq; System.Xml.Linq.
+namespace Cad2Gdml.Import
+`internal static class GdmlComposite` с одним методом:
+`internal static bool TryMassFractions(XElement material, IDictionary<string, string> elementSymbol, IDictionary<string, double> elementMass, out List<KeyValuePair<string, double>> fractions, out string note)`
+
+Переводит состав вещества GDML по числу атомов в массовые доли. `material` — элемент `<material>`; его дочерние `<composite n="..." ref="..."/>` (сравнивать по `Name.LocalName`): n — число атомов элемента ref в формульной единице (может быть дробным, `double.TryParse` с `NumberStyles.Float` и `CultureInfo.InvariantCulture`), ref — имя элемента. `elementSymbol`: имя элемента (как в ref) → символ элемента (по нему ключ в результате); `elementMass`: имя элемента → атомная масса, г/моль. Формула: масса i = n_i × A_i; доля i = масса i / Σ массы. Если один символ встретился несколько раз (элементы с разными именами, но одним символом или повтор ref) — доли складываются по символу; порядок символов в результате — порядок первого появления. Результат `fractions` — список пар (символ, массовая доля), сумма равна 1; `true`. Если ошибка — вернуть `false`, `fractions = null` и `note` — русская строка, начинающаяся с «Вещество NAME пропущено: » (NAME — атрибут name материала), причины: у composite нет ref или n не число или n ≤ 0 → «неверная запись composite»; ref не найден в elementSymbol → «элемент REF не описан»; элемент есть, но нет в elementMass → «нет атомной массы элемента REF»; сумма масс ≤ 0 или composite нет вообще → «нет состава». При успехе `note = null`. Бросать исключения нельзя.
+Комментарии по-русски. Без Console, без статического состояния.

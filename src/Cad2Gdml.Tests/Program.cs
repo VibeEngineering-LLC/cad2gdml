@@ -50,6 +50,8 @@ namespace Cad2Gdml.Tests
             checks.AddRange(Checks2n.All(_tempDir));
             checks.AddRange(Checks2o.All(_tempDir));
             checks.AddRange(ChecksOverlap.All(_tempDir));
+            checks.AddRange(ChecksTess.All(_tempDir));
+            checks.AddRange(ChecksTess2.All(_tempDir));
             checks.AddRange(ChecksGui.All(_tempDir));
             checks.AddRange(ChecksGui2.All(_tempDir));
             checks.AddRange(ChecksGui3.All(_tempDir));

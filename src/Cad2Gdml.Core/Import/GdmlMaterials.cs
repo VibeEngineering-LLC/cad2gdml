@@ -20,6 +20,7 @@ namespace Cad2Gdml.Import
 
             // Собираем имена элементов и материалов из всего файла
             var elementSym = new Dictionary<string, string>(StringComparer.Ordinal);
+            var elementMass = new Dictionary<string, double>(StringComparer.Ordinal);
             var materialNames = new HashSet<string>(StringComparer.Ordinal);
             foreach (var el in doc.Descendants("element"))
             {
@@ -27,6 +28,10 @@ namespace Cad2Gdml.Import
                 if (n == null || elementSym.ContainsKey(n)) continue;
                 var f = (string)el.Attribute("formula");
                 elementSym[n] = f ?? n;
+                // атомная масса, г/моль: <atom value="..."/> (нужна для состава по числу атомов)
+                var atomEl = el.Element("atom");
+                if (atomEl != null && double.TryParse((string)atomEl.Attribute("value"), NumberStyles.Float, CultureInfo.InvariantCulture, out double am) && am > 0)
+                    elementMass[n] = am;
             }
             foreach (var m in doc.Descendants("material"))
             {
@@ -58,9 +63,17 @@ namespace Cad2Gdml.Import
                 }
                 if (!ok) { notes.Add("Вещество " + name + " пропущено: нет плотности"); continue; }
 
-                // Composite — не поддерживаем
+                // Состав по числу атомов (<composite n=..>) -> массовые доли через атомные массы элементов файла
                 if (mat.Element("composite") != null)
-                { notes.Add("Вещество " + name + " пропущено: состав по числу атомов не поддержан"); continue; }
+                {
+                    List<KeyValuePair<string, double>> cf; string cnote;
+                    if (!GdmlComposite.TryMassFractions(mat, elementSym, elementMass, out cf, out cnote)) { notes.Add(cnote); continue; }
+                    if (cnote != null) notes.Add(cnote); // принято с замечанием (нецелое n)
+                    if (mat.Element("fraction") != null)
+                        notes.Add("Вещество " + name + ": composite и fraction заданы вместе, fraction игнорируются");
+                    result.Add(new MaterialDef { Name = name, DensityGcm3 = density, IsNist = false, MassFractions = cf });
+                    continue;
+                }
 
                 // Состав из <fraction>
                 var frs = mat.Elements("fraction").ToList();

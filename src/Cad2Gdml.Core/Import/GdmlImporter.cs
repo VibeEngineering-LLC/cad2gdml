@@ -21,6 +21,13 @@ namespace Cad2Gdml.Import
 
         public static IList<Part> Load(string path, out IList<string> skipped)
         {
+            IList<string[]> warnings;
+            return Load(path, out skipped, out warnings);
+        }
+
+        // warnings: {код, имя тела, сообщение} — тела tessellated, пропущенные из-за плохой позиции, и проигнорированный lunit тела
+        public static IList<Part> Load(string path, out IList<string> skipped, out IList<string[]> warnings)
+        {
             XDocument doc;
             try { doc = XDocument.Load(path); }
             catch (Exception ex) { throw new InvalidDataException("Не удалось загрузить XML: " + ex.Message); }
@@ -31,7 +38,8 @@ namespace Cad2Gdml.Import
 
             double lunit = ParseLunit(GetAttr(setup, "lunit"));
             var skippedList = new List<string>();
-            var solids = ParseSolids(doc.Root, lunit, skippedList);
+            var warnList = new List<string[]>();
+            var solids = ParseSolids(doc.Root, lunit, skippedList, warnList);
             var volumes = ParseStructure(doc.Root);
 
             var defPos = new Dictionary<string, double[]>();
@@ -47,6 +55,7 @@ namespace Cad2Gdml.Import
             var nameCount = new Dictionary<string, int>();
             Walk(worldRef, Identity(), 0, 0, 0, 0, volumes, solids, defPos, defRot, parts, nameCount, path, true);
             skipped = skippedList;
+            warnings = warnList;
             return parts;
         }
 
@@ -63,11 +72,12 @@ namespace Cad2Gdml.Import
             }
         }
 
-        private static Dictionary<string, Func<Mesh>> ParseSolids(XElement root, double lunit, List<string> skipped)
+        private static Dictionary<string, Func<Mesh>> ParseSolids(XElement root, double lunit, List<string> skipped, List<string[]> warnings)
         {
             var result = new Dictionary<string, Func<Mesh>>();
             var solidsEl = FindChild(root, "solids");
             if (solidsEl == null) throw new InvalidDataException("Не найден элемент <solids>.");
+            TessPositions tessPos = null; // позиции <define>: один раз на файл, разбор ленивый
             foreach (var s in solidsEl.Elements())
             {
                 string name = GetAttr(s, "name");
@@ -93,6 +103,23 @@ namespace Cad2Gdml.Import
                         if (zp.Name.LocalName == "zplane")
                             planes.Add(new double[] { PDouble(zp, "z") * lu, PDouble(zp, "rmin") * lu, PDouble(zp, "rmax") * lu });
                     result[name] = () => GdmlMeshing.BuildPolycone(sp, dp, planes);
+                }
+                else if (type == "tessellated")
+                {
+                    if (tessPos == null) tessPos = TessPositions.Read(root);
+                    string bodyLunit = GetAttr(s, "lunit");
+                    if (bodyLunit != "" && bodyLunit != "mm")
+                        warnings.Add(new[] { "W_GDML_LUNIT_IGNORED", name, "lunit тела tessellated «" + bodyLunit + "» не применяется: в Geant4 единица берётся с граней (по умолчанию мм)." });
+                    try
+                    {
+                        // строим один раз; плохая позиция/единица — пропуск только этого тела
+                        Mesh tessMesh = GdmlTessellated.Build(s, tessPos);
+                        result[name] = () => tessMesh;
+                    }
+                    catch (GdmlSkipBodyException ex)
+                    {
+                        warnings.Add(new[] { "W_GDML_SKIPPED", name, "Тело tessellated «" + name + "» пропущено: " + ex.Message + "." });
+                    }
                 }
                 else { skipped.Add(name); }
             }

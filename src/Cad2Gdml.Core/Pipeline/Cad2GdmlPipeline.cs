@@ -292,8 +292,11 @@ namespace Cad2Gdml.Pipeline
                 {
                     // GDML: единицы заданы в самом файле, o.UnitToMm не нужен
                     IList<string> skipped;
-                    var parts = GdmlImporter.Load(input, out skipped);
+                    IList<string[]> gdmlWarn;
+                    var parts = GdmlImporter.Load(input, out skipped, out gdmlWarn);
                     AddParts(scene, parts, input);
+                    foreach (var gw in gdmlWarn)
+                        scene.Add(gw[0], DiagSeverity.Warning, gw[1], gw[2]);
                     foreach (var sk in skipped)
                         scene.Add("W_GDML_SKIPPED", DiagSeverity.Warning, sk, "Неподдерживаемый вид тела GDML пропущен.");
                     // вещества, заданные внутри самого GDML (не G4_*), становятся своими веществами
